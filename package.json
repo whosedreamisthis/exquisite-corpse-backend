@@ -1,26 +1,27 @@
 {
-  "name": "exquisite-corpse-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/whosedreamisthis/exquisite-corpse-backend.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/whosedreamisthis/exquisite-corpse-backend/issues"
-  },
-  "homepage": "https://github.com/whosedreamisthis/exquisite-corpse-backend#readme",
-  "dependencies": {
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "mongodb": "^6.17.0",
-    "ws": "^8.18.2"
-  }
+	"name": "exquisite-corpse-backend",
+	"version": "1.0.0",
+	"description": "",
+	"main": "index.js",
+	"scripts": {
+		"start": "node server.js",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/whosedreamisthis/exquisite-corpse-backend.git"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"bugs": {
+		"url": "https://github.com/whosedreamisthis/exquisite-corpse-backend/issues"
+	},
+	"homepage": "https://github.com/whosedreamisthis/exquisite-corpse-backend#readme",
+	"dependencies": {
+		"dotenv": "^16.5.0",
+		"express": "^5.1.0",
+		"mongodb": "^6.17.0",
+		"ws": "^8.18.2"
+	}
 }
