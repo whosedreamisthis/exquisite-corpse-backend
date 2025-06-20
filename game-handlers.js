@@ -28,11 +28,9 @@ function getClientMessage(gameRoom, playerId) {
 	const hasSubmitted = gameRoom.submittedPlayers.includes(playerId);
 	const segmentName = segments[gameRoom.currentSegmentIndex];
 
-	if (hasSubmitted) {
-		return 'Waiting for other players to submit their segments.';
-	} else {
-		return `Draw the ${segmentName}.`;
-	}
+	return hasSubmitted
+		? 'Waiting for other players to submit their segments.'
+		: `Draw the ${segmentName}.`;
 }
 
 async function handleWebSocketMessage(ws, wss, db, message) {
@@ -43,7 +41,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		const gameRoom = await gameRoomsCollection.findOne({
 			gameCode: data.gameCode,
 		});
-
 		if (!gameRoom || gameRoom.status === 'completed') return;
 
 		ws.gameRoomId = gameRoom._id.toString();
@@ -130,7 +127,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		gameRoom.currentSegmentSubmissions[ws.playerId] = data.canvasData;
 
 		const segmentIndex = gameRoom.currentSegmentIndex;
-
 		console.log(
 			`[SUBMIT] Player ${ws.playerId} submitted for segment ${segmentIndex}. Submitted players: ${gameRoom.submittedPlayers.length}`
 		);
@@ -140,7 +136,9 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				`[SUBMIT] Both players submitted for segment ${segmentIndex}.`
 			);
 
-			if (segmentIndex + 1 >= TOTAL_SEGMENTS) {
+			const isFinalSegment = segmentIndex + 1 >= TOTAL_SEGMENTS;
+
+			if (isFinalSegment) {
 				gameRoom.status = 'completed';
 				gameRoom.finalArtworks = [
 					gameRoom.activeCanvasStates[0],
@@ -162,7 +160,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				{ $set: gameRoom }
 			);
 
-			// 🧠 THIS is the fix: broadcast the updated game state to all players
 			wss.clients.forEach((client) => {
 				if (
 					client.readyState === WebSocket.OPEN &&
@@ -172,6 +169,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 						gameRoom.canvasAssignments[client.playerId];
 					const canvasDataToSend =
 						gameRoom.activeCanvasStates[assignedCanvasIndex];
+					const isCompleted = gameRoom.status === 'completed';
 
 					client.send(
 						JSON.stringify({
@@ -183,14 +181,17 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							currentSegmentIndex: gameRoom.currentSegmentIndex,
 							playerCount: gameRoom.playerCount,
 							status: gameRoom.status,
-							canDraw: !gameRoom.submittedPlayers.includes(
-								client.playerId
-							),
-							isWaitingForOthers:
-								gameRoom.submittedPlayers.includes(
+							canDraw:
+								!isCompleted &&
+								!gameRoom.submittedPlayers.includes(
 									client.playerId
 								),
-							canvasData: canvasDataToSend,
+							isWaitingForOthers: isCompleted
+								? false
+								: gameRoom.submittedPlayers.includes(
+										client.playerId
+								  ),
+							canvasData: isCompleted ? null : canvasDataToSend,
 							finalArtwork1: gameRoom.finalArtworks?.[0],
 							finalArtwork2: gameRoom.finalArtworks?.[1],
 						})
@@ -207,7 +208,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 }
 
 async function handleWebSocketClose(ws, wss, db) {
-	// You already have this part correct—no changes needed here
+	// No changes needed here for now
 }
 
 module.exports = {
