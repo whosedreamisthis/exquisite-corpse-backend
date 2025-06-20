@@ -350,7 +350,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		case 'submitSegment':
 			{
-				const { gameRoomId, canvasData, playerId } = data;
+				const { gameRoomId, canvasData, playerId } = parsedMessage; // Corrected: Use parsedMessage
 				let gameRoom = await db.collection(COLLECTION_NAME).findOne({
 					_id: new ObjectId(gameRoomId),
 				});
