@@ -115,17 +115,15 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							nickname || `Player_${ws.playerId.substring(0, 4)}`,
 					});
 					gameRoom.playerCount = gameRoom.players.length;
-					await db
-						.collection(COLLECTION_NAME)
-						.updateOne(
-							{ _id: gameRoom._id },
-							{
-								$set: {
-									players: gameRoom.players,
-									playerCount: gameRoom.playerCount,
-								},
-							}
-						);
+					await db.collection(COLLECTION_NAME).updateOne(
+						{ _id: gameRoom._id },
+						{
+							$set: {
+								players: gameRoom.players,
+								playerCount: gameRoom.playerCount,
+							},
+						}
+					);
 					ws.gameRoomId = gameRoom._id.toString(); // Assign gameRoomId to WebSocket for easy lookup
 					console.log(
 						`Backend: Player ${nickname || 'Guest'} (${
@@ -194,20 +192,39 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				// If this is the second player joining (or more if you expand),
 				// and the game hasn't started (currentSegmentIndex is 0 and no submissions yet),
 				// automatically advance to the first segment.
+				// NEW CODE - REPLACE THE ABOVE BLOCK WITH THIS
 				if (
 					gameRoom.playerCount >= 2 &&
 					gameRoom.currentSegmentIndex === 0 &&
-					gameRoom.submittedPlayers.length === 0 &&
 					gameRoom.status === 'waiting'
 				) {
 					console.log(
-						'Backend: Enough players, starting first segment.'
+						'Backend: Enough players. Game status set to in-progress. All players should draw the Head.'
 					);
 					await db.collection(COLLECTION_NAME).updateOne(
 						{ _id: gameRoom._id },
 						{ $set: { status: 'in-progress' } } // Update game status
 					);
-					await advanceSegment(db, wss, gameRoom._id); // Start the first segment
+
+					// Notify all players that the game has officially started and they should draw the HEAD (segment 0)
+					wss.clients.forEach((client) => {
+						if (
+							client.readyState === WebSocket.OPEN &&
+							client.gameRoomId === gameRoom._id.toString()
+						) {
+							client.send(
+								JSON.stringify({
+									type: 'playerJoined', // Re-use this type to update state on frontend
+									gameCode: gameRoom.gameCode,
+									gameRoomId: gameRoom._id.toString(),
+									playerCount: gameRoom.playerCount,
+									currentSegmentIndex: 0, // Explicitly tell them to draw segment 0 (Head)
+									canvasData: null, // No previous canvas for the first segment
+									message: 'Game started! Draw the Head.',
+								})
+							);
+						}
+					});
 				}
 				break;
 
