@@ -11,8 +11,13 @@ const {
 	handleWebSocketMessage,
 	handleWebSocketClose,
 } = require('./game-handlers');
+const { createBlankCanvas } = require('./canvas-utils'); // Import new function
 
 const PORT = process.env.PORT || 8080;
+
+// Define canvas dimensions (should be consistent across frontend and backend)
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
 
 const app = express();
 app.use(express.json());
@@ -26,6 +31,7 @@ app.post('/api/createGame', async (req, res) => {
 	try {
 		const db = getDb();
 		const COLLECTION_NAME = 'gameRooms';
+
 		const newGameRoom = {
 			gameCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
 			players: [], // Stores WS IDs
@@ -37,20 +43,15 @@ app.post('/api/createGame', async (req, res) => {
 			status: 'waiting',
 			createdAt: new Date(),
 			// --- NEW FIELDS FOR TWO-CANVAS GAMEPLAY ---
-			artworks: [
-				{
-					segments: [], // Segments for artwork 1
-					finalArtwork: null, // Combined image for artwork 1
-				},
-				{
-					segments: [], // Segments for artwork 2
-					finalArtwork: null, // Combined image for artwork 2
-				},
+			activeCanvasStates: [
+				// Initialize with two blank canvases
+				await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
+				await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
 			],
-			// Maps playerId to the index of the artwork they are currently drawing on (0 or 1)
-			playerCanvasAssignments: {},
-			// --- END NEW FIELDS ---
+			canvasAssignments: {}, // Will be populated when the game starts, mapping playerId to canvas index (0 or 1)
+			finalArtworks: [], // To store the two final combined artworks at the end of the game
 		};
+
 		const result = await db
 			.collection(COLLECTION_NAME)
 			.insertOne(newGameRoom);
@@ -88,17 +89,17 @@ async function startServer() {
 				handleWebSocketMessage(ws, wss, dbInstance, message)
 			);
 			ws.on('close', () => handleWebSocketClose(ws, wss, dbInstance));
-			ws.on('error', (error) => {
-				console.error('WebSocket error for client', ws.id, ':', error);
-			});
+			ws.on('error', (error) =>
+				console.error(`[WS] Error for client ${ws.playerId}:`, error)
+			);
 		});
 
 		server.listen(PORT, () => {
-			console.log(`Server is running on port ${PORT}`);
+			console.log(`Server is running on http://localhost:${PORT}`);
 		});
 	} catch (error) {
 		console.error('Failed to start server:', error);
-		process.exit(1);
+		process.exit(1); // Exit if server fails to start
 	}
 }
 

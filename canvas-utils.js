@@ -4,6 +4,19 @@
 const { createCanvas, Image } = require('canvas');
 
 /**
+ * Creates a blank canvas and returns its data URL.
+ * @param {number} width The width of the canvas.
+ * @param {number} height The height of the canvas.
+ * @returns {string} The data URL of the blank canvas.
+ */
+function createBlankCanvas(width, height) {
+	const canvas = createCanvas(width, height);
+	const ctx = canvas.getContext('2d');
+	ctx.clearRect(0, 0, width, height); // Ensure it's transparent
+	return canvas.toDataURL();
+}
+
+/**
  * Combines an array of base64 image data URLs (canvas segments) into a single base64 image.
  * Each segment is assumed to be the same width and will be stacked vertically.
  * @param {string[]} segmentDataUrls An array of base64 data URLs for each canvas segment.
@@ -64,98 +77,34 @@ async function combineCanvases(segmentDataUrls) {
 	// Draw each image onto the new canvas, stacking them vertically
 	let currentY = 0;
 	for (const img of images) {
-		if (img.width && img.height) {
-			// Check if image loaded successfully
-			ctx.drawImage(img, 0, currentY, maxWidth, img.height);
-			currentY += img.height;
-		}
+		ctx.drawImage(img, 0, currentY, maxWidth, img.height);
+		currentY += img.height;
 	}
 
 	return canvas.toDataURL();
 }
 
 /**
- * Overlays an array of base64 image data URLs onto a single canvas.
- * Images are scaled to fit the target dimensions and drawn on top of each other.
- * @param {string[]} segmentDataUrls An array of base64 data URLs for the images to overlay.
- * @param {number} targetWidth The desired width of the resulting canvas.
- * @param {number} targetHeight The desired height of the resulting canvas.
- * @returns {Promise<string>} A promise that resolves with the base64 data URL of the overlaid canvas.
- */
-async function overlayCanvases(segmentDataUrls, targetWidth, targetHeight) {
-	if (
-		!segmentDataUrls ||
-		segmentDataUrls.length === 0 ||
-		targetWidth <= 0 ||
-		targetHeight <= 0
-	) {
-		console.warn('overlayCanvases received invalid inputs.');
-		return '';
-	}
-
-	const canvas = createCanvas(targetWidth, targetHeight);
-	const ctx = canvas.getContext('2d');
-
-	// Ensure background is transparent or white for proper overlay if desired
-	ctx.clearRect(0, 0, targetWidth, targetHeight); // Clear to transparent
-
-	// Load all images and draw them onto the canvas
-	for (const dataUrl of segmentDataUrls) {
-		if (!dataUrl) continue;
-		const img = new Image();
-		img.src = dataUrl;
-
-		await new Promise((resolve) => {
-			img.onload = () => {
-				// Draw each image scaled to fit the target dimensions
-				ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-				resolve();
-			};
-			img.onerror = (err) => {
-				console.warn(
-					'Failed to load image for overlay:',
-					err,
-					dataUrl.substring(0, 50) + '...'
-				);
-				resolve();
-			};
-		});
-	}
-
-	return canvas.toDataURL();
-}
-
-/**
- * Creates a new canvas of target dimensions and draws the bottom portion of a source image onto its bottom.
- * The rest of the target canvas remains transparent.
- * @param {string} fullPreviousDrawingDataUrl The base64 data URL of the complete previous drawing.
- * @param {number} peekHeight The height of the peek portion from the bottom of the source image.
- * @param {number} targetWidth The desired width of the resulting canvas.
- * @param {number} targetHeight The desired height of the resulting canvas.
- * @returns {Promise<string>} A promise that resolves with the base64 data URL of the new canvas with the peek.
+ * Creates a new canvas that contains the bottom 'peekHeight' pixels
+ * of a given drawing, positioned at the bottom of the new canvas.
+ * The top portion of the new canvas will be transparent.
+ *
+ * @param {string} fullPreviousDrawingDataUrl The data URL of the full previous drawing.
+ * @param {number} targetWidth The desired width of the new canvas.
+ * @param {number} targetHeight The desired height of the new canvas.
+ * @param {number} peekHeight The height of the portion to peek from the bottom of the previous drawing.
+ * @returns {Promise<string>} A promise that resolves with the data URL of the new canvas with the peek.
  */
 async function createCanvasWithBottomPeek(
 	fullPreviousDrawingDataUrl,
-	peekHeight,
 	targetWidth,
-	targetHeight
+	targetHeight,
+	peekHeight
 ) {
-	if (
-		!fullPreviousDrawingDataUrl ||
-		peekHeight <= 0 ||
-		targetWidth <= 0 ||
-		targetHeight <= 0
-	) {
-		console.warn('createCanvasWithBottomPeek received invalid inputs.');
-		// Return an empty canvas data URL for consistency
-		const emptyCanvas = createCanvas(targetWidth, targetHeight);
-		return emptyCanvas.toDataURL();
-	}
-
-	const img = new Image();
-	img.src = fullPreviousDrawingDataUrl;
-
 	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.src = fullPreviousDrawingDataUrl;
+
 		img.onload = () => {
 			const sourceWidth = img.width;
 			const sourceHeight = img.height;
@@ -204,6 +153,6 @@ async function createCanvasWithBottomPeek(
 
 module.exports = {
 	combineCanvases,
-	overlayCanvases,
 	createCanvasWithBottomPeek,
+	createBlankCanvas, // Export the new function
 };
