@@ -13,7 +13,6 @@ const {
 
 const PORT = process.env.PORT || 8080;
 
-// --- Express App ---
 const app = express();
 app.use(express.json());
 
@@ -21,11 +20,10 @@ app.get('/', (req, res) => {
 	res.status(200).send('Exquisite Corpse Backend is running!');
 });
 
-// Example: HTTP endpoint to create a new game room (can still be useful for initial setup)
 app.post('/api/createGame', async (req, res) => {
 	try {
-		const db = getDb(); // Get the connected DB instance
-		const COLLECTION_NAME = 'gameRooms'; // Define here or pass from config
+		const db = getDb(); // This getDb() should now always return initialized db
+		const COLLECTION_NAME = 'gameRooms';
 		const newGameRoom = {
 			gameCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
 			players: [],
@@ -49,33 +47,39 @@ app.post('/api/createGame', async (req, res) => {
 	}
 });
 
-// --- WebSocket Server ---
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+// --- Main Server Startup Function ---
+async function startServer() {
+	try {
+		const dbInstance = await connectToMongo(); // Await the DB connection
+		console.log('MongoDB connected, starting server...');
 
-wss.on('connection', (ws) => {
-	ws.id = Math.random().toString(36).substring(2, 15);
-	ws.gameRoomId = null;
-	ws.playerId = ws.id;
+		const server = http.createServer(app);
+		const wss = new WebSocket.Server({ server });
 
-	console.log('Client connected via WebSocket. ID:', ws.id);
+		wss.on('connection', (ws) => {
+			ws.id = Math.random().toString(36).substring(2, 15);
+			ws.gameRoomId = null;
+			ws.playerId = ws.id;
 
-	// Pass ws, wss (for broadcasting), and db to the message handler
-	ws.on('message', (message) =>
-		handleWebSocketMessage(ws, wss, getDb(), message)
-	);
+			console.log('Client connected via WebSocket. ID:', ws.id);
 
-	// Pass ws, db, and wss to the close handler
-	ws.on('close', () => handleWebSocketClose(ws, getDb(), wss));
+			// Pass the dbInstance directly to the handlers
+			ws.on('message', (message) =>
+				handleWebSocketMessage(ws, wss, dbInstance, message)
+			);
+			ws.on('close', () => handleWebSocketClose(ws, wss, dbInstance)); // Pass dbInstance
+			ws.on('error', (error) =>
+				handleWebSocketClose(ws, wss, dbInstance, error)
+			); // Pass dbInstance
+		});
 
-	ws.on('error', (error) => {
-		console.error('WebSocket error:', error);
-	});
-});
+		server.listen(PORT, () => {
+			console.log(`Server listening on port ${PORT}`);
+		});
+	} catch (error) {
+		console.error('Failed to connect to MongoDB or start server:', error);
+		process.exit(1); // Exit if critical startup fails
+	}
+}
 
-// --- Start the Server ---
-server.listen(PORT, async () => {
-	console.log(`Backend server listening on port ${PORT}`);
-	// Connect to MongoDB when the server starts, and ensure DB instance is available
-	await connectToMongo();
-});
+startServer(); // Call the async function to start everything
