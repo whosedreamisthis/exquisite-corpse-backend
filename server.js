@@ -4,7 +4,7 @@ require('dotenv').config();
 const WebSocket = require('ws');
 const http = require('http');
 const express = require('express');
-const cors = require('cors'); // <--- ADD THIS LINE
+const cors = require('cors');
 
 const { connectToMongo, getDb } = require('./db');
 const {
@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 8080;
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // <--- ADD THIS LINE TO ENABLE CORS FOR ALL ROUTES
+app.use(cors());
 
 app.get('/', (req, res) => {
 	res.status(200).send('Exquisite Corpse Backend is running!');
@@ -28,16 +28,28 @@ app.post('/api/createGame', async (req, res) => {
 		const COLLECTION_NAME = 'gameRooms';
 		const newGameRoom = {
 			gameCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-			players: [],
-			playerObjects: [],
+			players: [], // Stores WS IDs
+			playerObjects: [], // Stores {id, name}
 			playerCount: 0,
-			currentTurn: 0,
-			canvasSegments: [],
 			currentSegmentIndex: 0,
-			submittedPlayers: [],
-			finalArtwork: null,
+			submittedPlayers: [], // Stores playerIds who submitted for the current segment
+			currentSegmentSubmissions: {}, // Stores individual player submissions for the current segment
 			status: 'waiting',
 			createdAt: new Date(),
+			// --- NEW FIELDS FOR TWO-CANVAS GAMEPLAY ---
+			artworks: [
+				{
+					segments: [], // Segments for artwork 1
+					finalArtwork: null, // Combined image for artwork 1
+				},
+				{
+					segments: [], // Segments for artwork 2
+					finalArtwork: null, // Combined image for artwork 2
+				},
+			],
+			// Maps playerId to the index of the artwork they are currently drawing on (0 or 1)
+			playerCanvasAssignments: {},
+			// --- END NEW FIELDS ---
 		};
 		const result = await db
 			.collection(COLLECTION_NAME)
@@ -68,7 +80,7 @@ async function startServer() {
 		wss.on('connection', (ws) => {
 			ws.id = Math.random().toString(36).substring(2, 15);
 			ws.gameRoomId = null;
-			ws.playerId = ws.id;
+			ws.playerId = ws.id; // Assign a unique ID to the WebSocket connection
 
 			console.log('Client connected via WebSocket. ID:', ws.id);
 
@@ -76,9 +88,9 @@ async function startServer() {
 				handleWebSocketMessage(ws, wss, dbInstance, message)
 			);
 			ws.on('close', () => handleWebSocketClose(ws, wss, dbInstance));
-			ws.on('error', (error) =>
-				handleWebSocketClose(ws, wss, dbInstance, error)
-			);
+			ws.on('error', (error) => {
+				console.error('WebSocket error for client', ws.id, ':', error);
+			});
 		});
 
 		server.listen(PORT, () => {

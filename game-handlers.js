@@ -1,25 +1,25 @@
 // game-handlers.js
 
 const { ObjectId } = require('mongodb');
-const WebSocket = require('ws'); // Ensure WebSocket is imported here
+const WebSocket = require('ws');
 const {
 	combineCanvases,
 	overlayCanvases,
 	createCanvasWithBottomPeek,
-} = require('./canvas-utils'); // Import new function
+} = require('./canvas-utils');
 
 // --- Constants ---
 const COLLECTION_NAME = 'gameRooms';
-const TOTAL_SEGMENTS = 4; // Define the total number of segments for the game
-const MAX_PLAYERS = 2; // Define the maximum number of players
+const TOTAL_SEGMENTS = 4; // Head, Torso, Legs, Feet
+const MAX_PLAYERS = 2; // For now, fixed at 2
 const CANVAS_WIDTH = 800; // Assuming fixed canvas dimensions
 const CANVAS_HEIGHT = 600;
-const PEEK_HEIGHT = 100; // Define the height of the "peek" from the previous segment
+const PEEK_HEIGHT = 100; // Height of the "peek" from the previous segment
 
 // Segments for the game (Head, Torso, Legs, Feet)
 const segments = ['Head', 'Torso', 'Legs', 'Feet'];
 
-// Helper to create a blank canvas data URL (might not be needed if canvas-utils has it)
+// Helper to create a blank canvas data URL
 function createCanvas(width, height) {
 	const { createCanvas } = require('canvas'); // Local import for this helper
 	const canvas = createCanvas(width, height);
@@ -28,12 +28,32 @@ function createCanvas(width, height) {
 	return canvas;
 }
 
-// --- WebSocket Message Handler Functions ---
+// Helper to determine message for client based on game state
+function getClientMessage(gameRoom, playerId) {
+	if (gameRoom.status === 'completed') {
+		return 'Game Over! The exquisite corpse is complete!';
+	}
+	if (gameRoom.status === 'waiting') {
+		return `Joined game ${gameRoom.gameCode}. Waiting for ${
+			MAX_PLAYERS - gameRoom.playerCount
+		} more player(s)...`;
+	}
+
+	// Game is 'playing'
+	const hasSubmitted = gameRoom.submittedPlayers.includes(playerId);
+	const segmentName = segments[gameRoom.currentSegmentIndex];
+
+	if (hasSubmitted) {
+		return 'Waiting for other players to submit their segments.';
+	} else {
+		return `Draw the ${segmentName}.`;
+	}
+}
 
 /**
  * Handles incoming WebSocket messages, routing them to appropriate functions.
  * @param {WebSocket} ws The WebSocket instance for the current client.
- * @param {WebSocket.Server} wss The WebSocket server instance.\
+ * @param {WebSocket.Server} wss The WebSocket server instance.
  * @param {Db} db The MongoDB database instance.
  * @param {string} message The incoming message string.
  */
@@ -85,27 +105,53 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				// Check if player is already in this game room (re-connecting logic)
 				if (gameRoom.playerObjects.some((p) => p.id === ws.playerId)) {
 					ws.gameRoomId = gameRoom._id.toHexString();
+					ws.playerName = playerName;
 					console.log(
 						`[JOIN GAME] Player ${playerName} (${ws.playerId}) re-joined game ${gameCode}`
 					);
 
+					// Determine state for re-joining player
 					const canDraw =
-						gameRoom.players[gameRoom.currentTurn] === ws.playerId;
+						gameRoom.status === 'playing' &&
+						!gameRoom.submittedPlayers.includes(ws.playerId);
 					const isWaitingForOthers =
 						gameRoom.status === 'playing' &&
 						gameRoom.submittedPlayers.includes(ws.playerId);
+
 					let initialCanvasData = null;
-					if (gameRoom.currentSegmentIndex > 0) {
-						initialCanvasData = await createCanvasWithBottomPeek(
-							gameRoom.canvasSegments[
+					// For re-joining, send the current canvas they are assigned to
+					const assignedArtworkIndex =
+						gameRoom.playerCanvasAssignments[ws.playerId];
+					if (
+						gameRoom.currentSegmentIndex > 0 &&
+						assignedArtworkIndex !== undefined
+					) {
+						const currentArtworkSegments =
+							gameRoom.artworks[assignedArtworkIndex].segments;
+						const lastSegmentData =
+							currentArtworkSegments[
 								gameRoom.currentSegmentIndex - 1
-							],
-							CANVAS_WIDTH,
-							CANVAS_HEIGHT,
-							PEEK_HEIGHT
-						);
+							];
+						if (lastSegmentData) {
+							initialCanvasData =
+								await createCanvasWithBottomPeek(
+									lastSegmentData,
+									CANVAS_WIDTH,
+									CANVAS_HEIGHT,
+									PEEK_HEIGHT
+								);
+						}
 					} else if (gameRoom.status === 'completed') {
-						initialCanvasData = gameRoom.finalArtwork;
+						// If game is over, send both final artworks
+						ws.send(
+							JSON.stringify({
+								type: 'gameOver',
+								finalArtworks: gameRoom.artworks.map(
+									(a) => a.finalArtwork
+								),
+							})
+						);
+						return; // Exit as game is over and final artworks are sent separately
 					}
 
 					ws.send(
@@ -114,22 +160,12 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							gameCode: gameRoom.gameCode,
 							gameRoomId: gameRoom._id,
 							playerCount: gameRoom.playerCount,
-							message:
-								gameRoom.status === 'completed'
-									? 'Game Over!'
-									: canDraw
-									? `Draw the ${
-											segments[
-												gameRoom.currentSegmentIndex
-											]
-									  }.`
-									: 'Waiting for other players.',
+							message: getClientMessage(gameRoom, ws.playerId),
 							currentSegmentIndex: gameRoom.currentSegmentIndex,
 							canDraw: canDraw,
 							isWaitingForOthers: isWaitingForOthers,
-							canvasData: initialCanvasData,
+							canvasData: initialCanvasData, // This will be the peek for their assigned canvas
 							status: gameRoom.status,
-							finalArtwork: gameRoom.finalArtwork,
 							playerId: ws.playerId,
 						})
 					);
@@ -156,7 +192,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					id: ws.playerId,
 					name: playerName,
 				});
-				gameRoom.playerCount++; // This increments
+				gameRoom.playerCount++;
 				ws.gameRoomId = gameRoom._id.toHexString(); // Store gameRoomId on WebSocket client instance
 				ws.playerName = playerName; // Store player name on WebSocket client instance
 
@@ -167,13 +203,12 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					`[JOIN GAME] Updated players array (in memory): ${gameRoom.players.map(
 						(p) => (p ? p.slice(0, 5) + '...' : 'null')
 					)}`
-				); // Log partial IDs and handle null/undefined
+				);
 
 				// Update the game room in the database immediately
 				const updateResult = await db
 					.collection(COLLECTION_NAME)
 					.updateOne(
-						// Capture the result
 						{ _id: gameRoom._id },
 						{
 							$set: {
@@ -188,9 +223,9 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				);
 
 				// Fetch the game room again from DB to ensure latest state (optional, but good for debugging)
-				gameRoom = await db
-					.collection(COLLECTION_NAME)
-					.findOne({ _id: gameRoom._id });
+				gameRoom = await db.collection(COLLECTION_NAME).findOne({
+					_id: gameRoom._id,
+				});
 				console.log(
 					`[JOIN GAME] After DB update (refetched): gameRoom.playerCount = ${gameRoom.playerCount}, Status: ${gameRoom.status}`
 				);
@@ -208,7 +243,14 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					);
 					gameRoom.status = 'playing';
 					gameRoom.currentSegmentIndex = 0;
-					gameRoom.currentTurn = 0; // First player draws head
+					gameRoom.submittedPlayers = []; // Ensure empty for first segment
+					gameRoom.currentSegmentSubmissions = {}; // Ensure empty for first segment
+
+					// Assign initial canvases: Player 1 gets artwork 0, Player 2 gets artwork 1
+					gameRoom.playerCanvasAssignments = {
+						[gameRoom.players[0]]: 0, // Player 1 (first to join) draws on artwork 0
+						[gameRoom.players[1]]: 1, // Player 2 (second to join) draws on artwork 1
+					};
 
 					// Update status and turn in DB
 					const gameStartUpdateResult = await db
@@ -220,7 +262,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 									status: gameRoom.status,
 									currentSegmentIndex:
 										gameRoom.currentSegmentIndex,
-									currentTurn: gameRoom.currentTurn,
+									submittedPlayers: gameRoom.submittedPlayers,
+									currentSegmentSubmissions:
+										gameRoom.currentSegmentSubmissions,
+									playerCanvasAssignments:
+										gameRoom.playerCanvasAssignments, // Save assignments
 								},
 							}
 						);
@@ -232,98 +278,120 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					);
 
 					// Notify all players in the room that the game has started
-					const initialCanvasData = null; // No peek for the first segment
 					console.log(
 						`[JOIN GAME] Broadcasting gameStarted to clients in room: ${gameRoom._id.toHexString()}`
 					);
-					wss.clients.forEach((client) => {
+					for (const client of wss.clients) {
+						// Changed to for...of loop
 						if (
 							client.readyState === WebSocket.OPEN &&
 							client.gameRoomId === gameRoom._id.toHexString()
 						) {
-							const canDraw =
-								gameRoom.players[gameRoom.currentTurn] ===
-								client.playerId;
+							// All players can draw the first segment (no peek yet)
+							const canDraw = true;
 							console.log(
 								`[JOIN GAME - GAME STARTED] Sending to client ${client.playerId}: playerCount=${gameRoom.playerCount}, canDraw=${canDraw}`
 							);
 							client.send(
 								JSON.stringify({
 									type: 'gameStarted',
-									message: `Game ${
-										gameRoom.gameCode
-									} started! Draw the ${
-										segments[gameRoom.currentSegmentIndex]
-									}.`,
+									message: getClientMessage(
+										gameRoom,
+										client.playerId
+									),
 									playerCount: gameRoom.playerCount,
 									gameRoomId: gameRoom._id,
 									currentSegmentIndex:
 										gameRoom.currentSegmentIndex,
 									canDraw: canDraw,
 									isWaitingForOthers: false,
-									canvasData: initialCanvasData,
+									canvasData: null, // No peek for the first segment
 									playerId: client.playerId,
 								})
 							);
 						}
-					});
+					}
 				} else {
 					console.log(
 						`[JOIN GAME] Game not starting yet. Still waiting for players. Current players: ${gameRoom.playerCount}/${MAX_PLAYERS}`
 					);
 					// Game is still waiting for more players or is already playing (re-join scenario)
-					const initialMessage = `Joined game ${gameCode}. Waiting for other players...`;
-					const canDraw = false; // No one can draw if waiting for more players
-					const isWaitingForOthers =
-						gameRoom.playerCount < MAX_PLAYERS; // Everyone waits if not enough players
-					const initialCanvasData = null;
-
 					// Send initialState to all clients in the room (including the one that just joined)
 					console.log(
 						`[JOIN GAME] Broadcasting initialState to clients in room: ${gameRoom._id.toHexString()}`
 					);
-					wss.clients.forEach((client) => {
+					for (const client of wss.clients) {
+						// Changed to for...of loop
 						if (
 							client.readyState === WebSocket.OPEN &&
 							client.gameRoomId === gameRoom._id.toHexString()
 						) {
-							// Determine if this client is the one that just joined or an existing one
-							const messageForClient =
-								client.playerId === ws.playerId
-									? initialMessage
-									: `Player ${playerName} joined. Players: ${gameRoom.playerCount}/${MAX_PLAYERS}`;
-							console.log(
-								`[JOIN GAME - INITIAL STATE] Sending to client ${client.playerId}: playerCount=${gameRoom.playerCount}, message='${messageForClient}'`
-							);
+							const canDraw =
+								gameRoom.status === 'playing' &&
+								!gameRoom.submittedPlayers.includes(
+									client.playerId
+								);
+							const isWaitingForOthers =
+								gameRoom.status === 'playing' &&
+								gameRoom.submittedPlayers.includes(
+									client.playerId
+								);
+
+							let initialCanvasData = null;
+							const assignedArtworkIndex =
+								gameRoom.playerCanvasAssignments[
+									client.playerId
+								];
+							if (
+								gameRoom.currentSegmentIndex > 0 &&
+								assignedArtworkIndex !== undefined
+							) {
+								const currentArtworkSegments =
+									gameRoom.artworks[assignedArtworkIndex]
+										.segments;
+								const lastSegmentData =
+									currentArtworkSegments[
+										gameRoom.currentSegmentIndex - 1
+									];
+								if (lastSegmentData) {
+									initialCanvasData =
+										await createCanvasWithBottomPeek(
+											lastSegmentData,
+											CANVAS_WIDTH,
+											CANVAS_HEIGHT,
+											PEEK_HEIGHT
+										);
+								}
+							}
+
 							client.send(
 								JSON.stringify({
-									type: 'initialState', // Keep sending initialState if not starting game
-									gameCode: gameCode,
+									type: 'initialState',
+									gameCode: gameRoom.gameCode,
 									gameRoomId: gameRoom._id,
 									playerCount: gameRoom.playerCount,
-									message: messageForClient,
+									message: getClientMessage(
+										gameRoom,
+										client.playerId
+									),
 									currentSegmentIndex:
 										gameRoom.currentSegmentIndex,
-									canDraw:
-										gameRoom.playerCount === MAX_PLAYERS &&
-										gameRoom.players[
-											gameRoom.currentTurn
-										] === client.playerId, // Only can draw if game started and it's their turn
-									isWaitingForOthers:
-										gameRoom.playerCount < MAX_PLAYERS, // Still waiting if not enough players
+									canDraw: canDraw,
+									isWaitingForOthers: isWaitingForOthers,
 									canvasData: initialCanvasData,
+									status: gameRoom.status,
 									playerId: client.playerId,
 								})
 							);
 						}
-					});
+					}
 				}
 			} catch (error) {
-				console.error('Error handling joinGame:', error);
+				console.error('Error joining game:', error);
 				ws.send(
 					JSON.stringify({
 						type: 'error',
-						message: 'Failed to join game.',
+						message: `Failed to join game: ${error.message}`,
 					})
 				);
 			}
@@ -331,10 +399,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		case 'submitSegment':
 			try {
-				if (!gameRoomId || !canvasData || !playerId) {
-					console.error(
-						'Invalid submission data: Missing gameRoomId, canvasData, or playerId.'
-					);
+				if (!gameRoomId || !playerId || !canvasData) {
 					ws.send(
 						JSON.stringify({
 							type: 'error',
@@ -344,10 +409,10 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					return;
 				}
 
-				// Find the game room
-				const gameRoom = await db
+				let gameRoom = await db
 					.collection(COLLECTION_NAME)
 					.findOne({ _id: new ObjectId(gameRoomId) });
+
 				if (!gameRoom) {
 					ws.send(
 						JSON.stringify({
@@ -358,273 +423,234 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					return;
 				}
 
-				// Check if it's the correct player and turn
-				if (gameRoom.players[gameRoom.currentTurn] !== playerId) {
+				// Ensure player hasn't already submitted for this segment
+				if (gameRoom.submittedPlayers.includes(playerId)) {
 					ws.send(
 						JSON.stringify({
 							type: 'error',
-							message: 'It is not your turn.',
+							message:
+								'You have already submitted for this segment.',
 						})
 					);
 					return;
 				}
 
-				// Store the submitted segment
-				// Create a temporary canvas with the peek from the previous segment for storage
-				let peekCanvasData = null;
-				if (gameRoom.canvasSegments.length > 0) {
-					const lastSegment =
-						gameRoom.canvasSegments[
-							gameRoom.canvasSegments.length - 1
-						];
-					peekCanvasData = await createCanvasWithBottomPeek(
-						lastSegment,
-						CANVAS_WIDTH,
-						CANVAS_HEIGHT,
-						PEEK_HEIGHT
+				// Get the artwork index this player is currently assigned to
+				const assignedArtworkIndex =
+					gameRoom.playerCanvasAssignments[playerId];
+				if (assignedArtworkIndex === undefined) {
+					ws.send(
+						JSON.stringify({
+							type: 'error',
+							message: 'No artwork assigned to you.',
+						})
 					);
+					return;
 				}
 
-				// Store the full submitted drawing
-				gameRoom.canvasSegments.push(canvasData);
-				gameRoom.submittedPlayers.push(playerId); // Track who submitted
+				// Store the submitted segment in the correct artwork's segments array
+				gameRoom.artworks[assignedArtworkIndex].segments[
+					gameRoom.currentSegmentIndex
+				] = canvasData;
 
-				// Update turn and check for next segment or game over
-				gameRoom.currentTurn =
-					(gameRoom.currentTurn + 1) % gameRoom.players.length;
+				// Add player to submitted list for this segment
+				gameRoom.submittedPlayers.push(playerId);
 
-				// Determine if all players have submitted for this round
-				const allPlayersSubmitted =
-					gameRoom.submittedPlayers.length === gameRoom.playerCount;
+				await db.collection(COLLECTION_NAME).updateOne(
+					{ _id: new ObjectId(gameRoomId) },
+					{
+						$set: {
+							submittedPlayers: gameRoom.submittedPlayers,
+							[`artworks.${assignedArtworkIndex}.segments.${gameRoom.currentSegmentIndex}`]:
+								canvasData, // Update specific segment
+						},
+					}
+				);
 
-				if (
-					allPlayersSubmitted &&
-					gameRoom.canvasSegments.length < TOTAL_SEGMENTS
-				) {
-					// Start next segment for all players
-					gameRoom.currentSegmentIndex++;
-					gameRoom.submittedPlayers = []; // Reset for next round
+				// Notify the current player that they are waiting
+				ws.send(
+					JSON.stringify({
+						type: 'segmentSubmitted',
+						message:
+							'Waiting for other players to submit their segments.',
+						canDraw: false,
+						isWaitingForOthers: true,
+					})
+				);
 
-					await db
-						.collection(COLLECTION_NAME)
-						.updateOne(
-							{ _id: new ObjectId(gameRoomId) },
-							{ $set: gameRoom }
-						);
-
-					wss.clients.forEach((client) => {
-						if (
-							client.readyState === WebSocket.OPEN &&
-							client.gameRoomId === gameRoomId
-						) {
-							const canDraw =
-								gameRoom.players[gameRoom.currentTurn] ===
-								client.playerId;
-							client.send(
-								JSON.stringify({
-									type: 'nextSegment',
-									message: `Game ${
-										gameRoom.gameCode
-									} - Draw the ${
-										segments[gameRoom.currentSegmentIndex]
-									}.`,
-									playerCount: gameRoom.playerCount,
-									currentSegmentIndex:
-										gameRoom.currentSegmentIndex,
-									canDraw: canDraw,
-									isWaitingForOthers: false,
-									gameRoomId: gameRoomId,
-									canvasData: canDraw ? peekCanvasData : null, // Send peek data to the next player to draw
-								})
-							);
-						}
-					});
-				} else if (
-					allPlayersSubmitted &&
-					gameRoom.canvasSegments.length === TOTAL_SEGMENTS
-				) {
-					// Game Over
-					gameRoom.status = 'completed';
-					const finalArtwork = await combineCanvases(
-						gameRoom.canvasSegments
+				// Check if all players have submitted for the current segment
+				if (gameRoom.submittedPlayers.length === MAX_PLAYERS) {
+					console.log(
+						`All players submitted for segment ${gameRoom.currentSegmentIndex}.`
 					);
-					gameRoom.finalArtwork = finalArtwork;
+					const nextSegmentIndex = gameRoom.currentSegmentIndex + 1;
+					const isGameOver = nextSegmentIndex >= TOTAL_SEGMENTS;
+
+					let updateDoc = {
+						currentSegmentIndex: nextSegmentIndex,
+						submittedPlayers: [], // Reset for next segment
+					};
+
+					if (isGameOver) {
+						updateDoc.status = 'completed';
+						// Combine final artworks for both canvases
+						for (let i = 0; i < gameRoom.artworks.length; i++) {
+							const finalCombinedArtwork = await combineCanvases(
+								gameRoom.artworks[i].segments
+							);
+							updateDoc[`artworks.${i}.finalArtwork`] =
+								finalCombinedArtwork;
+						}
+					} else {
+						// Swap player-canvas assignments for the next round
+						const player1Id = gameRoom.players[0];
+						const player2Id = gameRoom.players[1];
+						const currentAssignment1 =
+							gameRoom.playerCanvasAssignments[player1Id];
+						const currentAssignment2 =
+							gameRoom.playerCanvasAssignments[player2Id];
+
+						updateDoc.playerCanvasAssignments = {
+							[player1Id]: currentAssignment2, // Player 1 gets player 2's canvas
+							[player2Id]: currentAssignment1, // Player 2 gets player 1's canvas
+						};
+					}
 
 					await db
 						.collection(COLLECTION_NAME)
 						.updateOne(
 							{ _id: new ObjectId(gameRoomId) },
-							{ $set: gameRoom }
+							{ $set: updateDoc }
 						);
 
-					wss.clients.forEach((client) => {
-						if (
-							client.readyState === WebSocket.OPEN &&
-							client.gameRoomId === gameRoomId
-						) {
-							client.send(
-								JSON.stringify({
-									type: 'gameOver',
-									message:
-										'Game Over! The exquisite corpse is complete!',
-									finalArtwork: finalArtwork,
-									gameRoomId: gameRoomId,
-									playerCount: gameRoom.playerCount,
-								})
-							);
-						}
-					});
-				} else {
-					// Player submitted, waiting for others
-					await db
+					// Fetch updated game room to send correct state to clients
+					gameRoom = await db
 						.collection(COLLECTION_NAME)
-						.updateOne(
-							{ _id: new ObjectId(gameRoomId) },
-							{ $set: gameRoom }
-						);
+						.findOne({ _id: new ObjectId(gameRoomId) });
 
-					wss.clients.forEach((client) => {
+					// Notify all clients in the room about the new state
+					for (const client of wss.clients) {
+						// Changed to for...of loop
 						if (
 							client.readyState === WebSocket.OPEN &&
 							client.gameRoomId === gameRoomId
 						) {
-							const messageForClient =
-								gameRoom.players[gameRoom.currentTurn] ===
-								client.playerId
-									? `It's your turn to draw the ${
-											segments[
-												gameRoom.currentSegmentIndex
-											]
-									  }. Waiting for others to submit.`
-									: `Waiting for other players to submit their segments.`;
+							const clientAssignedArtworkIndex =
+								gameRoom.playerCanvasAssignments[
+									client.playerId
+								];
+							let canvasDataForClient = null;
 
-							client.send(
-								JSON.stringify({
-									type: 'waitingForOthers',
-									message: messageForClient,
-									playerCount: gameRoom.playerCount,
-									currentSegmentIndex:
-										gameRoom.currentSegmentIndex,
-									canDraw:
-										gameRoom.players[
-											gameRoom.currentTurn
-										] === client.playerId,
-									isWaitingForOthers: true, // Tell client they are waiting
-									gameRoomId: gameRoomId,
-									canvasData: null, // No peek data until all submit and new round starts
-								})
-							);
+							if (
+								!isGameOver &&
+								gameRoom.currentSegmentIndex > 0
+							) {
+								const currentArtworkSegments =
+									gameRoom.artworks[
+										clientAssignedArtworkIndex
+									].segments;
+								const lastSegmentData =
+									currentArtworkSegments[
+										gameRoom.currentSegmentIndex - 1
+									];
+
+								if (lastSegmentData) {
+									canvasDataForClient =
+										await createCanvasWithBottomPeek(
+											lastSegmentData,
+											CANVAS_WIDTH,
+											CANVAS_HEIGHT,
+											PEEK_HEIGHT
+										);
+								}
+							}
+
+							const canDraw =
+								!isGameOver &&
+								!gameRoom.submittedPlayers.includes(
+									client.playerId
+								);
+							const isWaitingForOthers =
+								!isGameOver &&
+								gameRoom.submittedPlayers.includes(
+									client.playerId
+								);
+
+							if (isGameOver) {
+								client.send(
+									JSON.stringify({
+										type: 'gameOver',
+										message: getClientMessage(
+											gameRoom,
+											client.playerId
+										),
+										finalArtworks: gameRoom.artworks.map(
+											(a) => a.finalArtwork
+										), // Send both final artworks
+										currentSegmentIndex:
+											gameRoom.currentSegmentIndex,
+									})
+								);
+							} else {
+								client.send(
+									JSON.stringify({
+										type: 'segmentCompleted', // New event type for segment completion + round start
+										message: getClientMessage(
+											gameRoom,
+											client.playerId
+										),
+										currentSegmentIndex:
+											gameRoom.currentSegmentIndex,
+										canDraw: canDraw,
+										isWaitingForOthers: isWaitingForOthers,
+										canvasData: canvasDataForClient, // This is the peek for the next segment
+									})
+								);
+							}
 						}
-					});
+					}
 				}
 			} catch (error) {
-				console.error('Error handling submitSegment:', error);
+				console.error('Error submitting segment:', error);
 				ws.send(
 					JSON.stringify({
 						type: 'error',
-						message: 'Failed to process submission.',
+						message: `Failed to submit segment: ${error.message}`,
 					})
 				);
 			}
 			break;
 
-		case 'requestGameState':
-			try {
-				// This is useful for players re-connecting or refreshing
-				const gameRoom = await db
-					.collection(COLLECTION_NAME)
-					.findOne({ gameCode: gameCode });
-				if (!gameRoom) {
-					ws.send(
-						JSON.stringify({
-							type: 'error',
-							message: 'Game not found.',
-						})
-					);
-					return;
-				}
-
-				// Determine if this specific client can draw
-				const canDraw =
-					gameRoom.players[gameRoom.currentTurn] === ws.playerId;
-				const isWaitingForOthers =
-					gameRoom.status === 'playing' &&
-					gameRoom.submittedPlayers.includes(ws.playerId);
-
-				let currentCanvasData = null;
-				if (gameRoom.currentSegmentIndex > 0) {
-					// Send the peek from the last submitted segment
-					const lastSegment =
-						gameRoom.canvasSegments[
-							gameRoom.canvasSegments.length - 1
-						];
-					currentCanvasData = await createCanvasWithBottomPeek(
-						lastSegment,
-						CANVAS_WIDTH,
-						CANVAS_HEIGHT,
-						PEEK_HEIGHT
-					);
-				} else if (
-					gameRoom.status === 'completed' &&
-					gameRoom.finalArtwork
-				) {
-					currentCanvasData = gameRoom.finalArtwork;
-				}
-
-				ws.send(
-					JSON.stringify({
-						type: 'initialState',
-						gameCode: gameRoom.gameCode,
-						gameRoomId: gameRoom._id,
-						playerCount: gameRoom.playerCount,
-						message: `Game ${gameRoom.gameCode} - ${
-							gameRoom.status === 'completed'
-								? 'Game Over!'
-								: `Draw the ${
-										segments[gameRoom.currentSegmentIndex]
-								  }.`
-						}`,
-						currentSegmentIndex: gameRoom.currentSegmentIndex,
-						canDraw: canDraw,
-						isWaitingForOthers: isWaitingForOthers,
-						canvasData: currentCanvasData,
-						status: gameRoom.status,
-						finalArtwork: gameRoom.finalArtwork,
-						playerId: ws.playerId,
-					})
-				);
-			} catch (error) {
-				console.error('Error handling requestGameState:', error);
-				ws.send(
-					JSON.stringify({
-						type: 'error',
-						message: 'Failed to retrieve game state.',
-					})
-				);
+		case 'sendDrawingUpdate':
+			// This part remains largely the same, as it's just broadcasting real-time drawing
+			// It doesn't affect the game state directly, only visual updates.
+			// However, ensure you are not broadcasting 'finalArtwork' here.
+			if (gameRoomId) {
+				wss.clients.forEach((client) => {
+					if (
+						client.readyState === WebSocket.OPEN &&
+						client.gameRoomId === gameRoomId &&
+						client.playerId !== ws.playerId // Don't send back to the sender
+					) {
+						client.send(
+							JSON.stringify({
+								type: 'drawingUpdate',
+								canvasData: canvasData,
+							})
+						);
+					}
+				});
 			}
 			break;
 
 		default:
-			ws.send(
-				JSON.stringify({
-					type: 'error',
-					message: 'Unknown message type.',
-				})
-			);
+			console.warn('Unknown message type:', type);
 			break;
 	}
 }
 
-/**
- * Handles WebSocket close events.
- * @param {WebSocket} ws The WebSocket instance for the current client.
- * @param {WebSocket.Server} wss The WebSocket server instance.
- * @param {Db} db The MongoDB database instance.
- */
 async function handleWebSocketClose(ws, wss, db) {
-	console.log(`Client ${ws.playerId} disconnected.`);
-
-	// If the client was in a game room, update the game room status
+	console.log(`Client disconnected. ID: ${ws.playerId}`);
 	if (ws.gameRoomId) {
 		try {
 			let gameRoom = await db
@@ -632,6 +658,7 @@ async function handleWebSocketClose(ws, wss, db) {
 				.findOne({ _id: new ObjectId(ws.gameRoomId) });
 
 			if (gameRoom) {
+				// Remove disconnected player from the arrays
 				const updatedPlayers = gameRoom.players.filter(
 					(id) => id !== ws.playerId
 				);
@@ -640,7 +667,19 @@ async function handleWebSocketClose(ws, wss, db) {
 				);
 				const newPlayerCount = updatedPlayers.length;
 
-				// If all players have disconnected, delete the game room
+				// Reset submittedPlayers if the disconnected player had submitted
+				const updatedSubmittedPlayers =
+					gameRoom.submittedPlayers.filter(
+						(id) => id !== ws.playerId
+					);
+
+				// Remove player's canvas assignment
+				const updatedPlayerCanvasAssignments = {
+					...gameRoom.playerCanvasAssignments,
+				};
+				delete updatedPlayerCanvasAssignments[ws.playerId];
+
+				// If no players left, delete the game room
 				if (newPlayerCount === 0) {
 					await db
 						.collection(COLLECTION_NAME)
@@ -649,6 +688,13 @@ async function handleWebSocketClose(ws, wss, db) {
 						`Game room ${ws.gameRoomId} deleted as all players disconnected.`
 					);
 				} else {
+					// If game was 'playing' and a player disconnects, revert to 'waiting' state
+					// This allows a new player to join and continue the game
+					let status = gameRoom.status;
+					if (status === 'playing') {
+						status = 'waiting'; // Pause game, wait for another player
+					}
+
 					await db.collection(COLLECTION_NAME).updateOne(
 						{ _id: new ObjectId(ws.gameRoomId) },
 						{
@@ -656,27 +702,41 @@ async function handleWebSocketClose(ws, wss, db) {
 								players: updatedPlayers,
 								playerObjects: updatedPlayerObjects,
 								playerCount: newPlayerCount,
-								status: 'waiting', // Set status back to waiting if a player leaves
+								status: status, // Set status back to waiting
+								submittedPlayers: updatedSubmittedPlayers, // Update in case player submitted
+								playerCanvasAssignments:
+									updatedPlayerCanvasAssignments, // Update assignments
 							},
 						}
 					);
 					console.log(
-						`Player disconnected from game room ${ws.gameRoomId}. Remaining players: ${newPlayerCount}`
+						`Player disconnected from game room ${ws.gameRoomId}. Remaining players: ${newPlayerCount}. Game status set to '${status}'.`
 					);
+
 					// Notify remaining players in the room
 					wss.clients.forEach((client) => {
 						if (
 							client.readyState === WebSocket.OPEN &&
 							client.gameRoomId === ws.gameRoomId
 						) {
+							// Re-evaluate client's state after disconnect
+							// The remaining player should now be in a 'waiting' state
 							client.send(
 								JSON.stringify({
 									type: 'playerDisconnected',
-									message:
-										'Other player disconnected. Waiting for a new player to join...',
+									message: getClientMessage(
+										{
+											...gameRoom,
+											status: status,
+											submittedPlayers:
+												updatedSubmittedPlayers,
+										},
+										client.playerId
+									),
 									playerCount: newPlayerCount,
 									canDraw: false, // Assume drawing is paused until new player joins
 									isWaitingForOthers: false, // Not waiting for submission anymore
+									status: status,
 								})
 							);
 						}
