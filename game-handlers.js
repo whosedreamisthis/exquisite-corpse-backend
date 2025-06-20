@@ -58,15 +58,23 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		switch (type) {
 			case 'createGame':
-				// ... (existing createGame logic)
+				// ... (existing createGame logic - this is handled by HTTP POST in server.js now)
+				// This case should ideally not be hit if game creation is via HTTP POST
+				console.warn(
+					'Received createGame WebSocket message - this should be an HTTP POST.'
+				);
 				break;
 
 			case 'joinGame':
+				console.log(`Attempting to join game with code: ${gameCode}`); // ADDED LOG
 				let gameRoom = await db
 					.collection(COLLECTION_NAME)
 					.findOne({ gameCode: gameCode.toUpperCase() });
 
 				if (!gameRoom) {
+					console.warn(
+						`Game room not found for code: ${gameCode.toUpperCase()}`
+					); // ADDED LOG
 					ws.send(
 						JSON.stringify({
 							type: 'error',
@@ -75,6 +83,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					);
 					return;
 				}
+				console.log(
+					`Found game room: ${
+						gameRoom._id
+					} for code: ${gameCode.toUpperCase()}`
+				); // ADDED LOG
 
 				// Check if player already exists in the room
 				const playerExists = gameRoom.players.includes(playerId);
@@ -176,6 +189,21 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 								);
 							console.log(
 								`Generated initial peek canvas for playerJoined/gameStarted.`
+							);
+							console.log(
+								`Initial peek canvas data URL starts with: ${
+									initialCanvasData
+										? initialCanvasData.substring(0, 100) +
+										  '...'
+										: 'null'
+								}`
+							);
+							console.log(
+								`Initial peek canvas data URL length: ${
+									initialCanvasData
+										? initialCanvasData.length
+										: 0
+								}`
 							);
 						} catch (combineErr) {
 							console.error(
@@ -429,6 +457,21 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							console.log(
 								`Generated initial state canvas with peek.`
 							);
+							console.log(
+								`Initial state canvas data URL starts with: ${
+									currentCanvasData
+										? currentCanvasData.substring(0, 100) +
+										  '...'
+										: 'null'
+								}`
+							);
+							console.log(
+								`Initial state canvas data URL length: ${
+									currentCanvasData
+										? currentCanvasData.length
+										: 0
+								}`
+							);
 						} catch (combineErr) {
 							console.error(
 								'Error generating canvas with peek for initial state:',
@@ -440,6 +483,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				// If game is over, ensure final artwork is sent, not a peek
 				if (requestedGameRoom.status === 'completed') {
 					currentCanvasData = requestedGameRoom.finalArtwork;
+					console.log(
+						`Requesting initial state for completed game. Final artwork data URL length: ${
+							currentCanvasData ? currentCanvasData.length : 0
+						}`
+					);
 				}
 
 				ws.send(
@@ -562,6 +610,13 @@ async function advanceSegment(gameRoomObjectId, wss, db) {
 					finalArtworkData ? finalArtworkData.length : 0
 				}`
 			);
+			console.log(
+				`Final artwork data URL starts with: ${
+					finalArtworkData
+						? finalArtworkData.substring(0, 100) + '...'
+						: 'null'
+				}`
+			);
 		} catch (finalCombineErr) {
 			console.error('Error combining final artwork:', finalCombineErr);
 		}
@@ -607,7 +662,7 @@ async function advanceSegment(gameRoomObjectId, wss, db) {
 					seg.isCombined &&
 					seg.segmentIndex < gameRoom.currentSegmentIndex
 			) // Filter for combined segments *before* the new current segment
-			.sort((a, b) => a.segmentIndex - b.segmentIndex)
+			.sort((a, b) => a.segmentIndex - b.assetIndex)
 			.map((seg) => seg.dataUrl);
 
 		let canvasDataForNextSegment = null;
@@ -626,6 +681,20 @@ async function advanceSegment(gameRoomObjectId, wss, db) {
 				);
 				console.log(
 					`Generated peek canvas for segment ${gameRoom.currentSegmentIndex}.`
+				);
+				console.log(
+					`Peek canvas data URL starts with: ${
+						canvasDataForNextSegment
+							? canvasDataForNextSegment.substring(0, 100) + '...'
+							: 'null'
+					}`
+				);
+				console.log(
+					`Peek canvas data URL length: ${
+						canvasDataForNextSegment
+							? canvasDataForNextSegment.length
+							: 0
+					}`
 				);
 			} else {
 				// This case should only happen if currentSegmentIndex is 0 (Head), but logic is inside else for segment advancement

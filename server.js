@@ -4,17 +4,19 @@ require('dotenv').config();
 const WebSocket = require('ws');
 const http = require('http');
 const express = require('express');
+const cors = require('cors'); // <--- ADD THIS LINE
 
-const { connectToMongo, getDb } = require('./db'); // Import DB functions
+const { connectToMongo, getDb } = require('./db');
 const {
 	handleWebSocketMessage,
 	handleWebSocketClose,
-} = require('./game-handlers'); // Import handlers
+} = require('./game-handlers');
 
 const PORT = process.env.PORT || 8080;
 
 const app = express();
 app.use(express.json());
+app.use(cors()); // <--- ADD THIS LINE TO ENABLE CORS FOR ALL ROUTES
 
 app.get('/', (req, res) => {
 	res.status(200).send('Exquisite Corpse Backend is running!');
@@ -22,20 +24,27 @@ app.get('/', (req, res) => {
 
 app.post('/api/createGame', async (req, res) => {
 	try {
-		const db = getDb(); // This getDb() should now always return initialized db
+		const db = getDb();
 		const COLLECTION_NAME = 'gameRooms';
 		const newGameRoom = {
 			gameCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
 			players: [],
+			playerObjects: [],
 			playerCount: 0,
 			currentTurn: 0,
 			canvasSegments: [],
 			currentSegmentIndex: 0,
+			submittedPlayers: [],
+			finalArtwork: null,
+			status: 'waiting',
 			createdAt: new Date(),
 		};
 		const result = await db
 			.collection(COLLECTION_NAME)
 			.insertOne(newGameRoom);
+		console.log(
+			`Successfully created game room with code: ${newGameRoom.gameCode} and ID: ${result.insertedId}`
+		);
 		res.status(201).json({
 			message: 'Game room created successfully',
 			gameId: result.insertedId,
@@ -50,7 +59,7 @@ app.post('/api/createGame', async (req, res) => {
 // --- Main Server Startup Function ---
 async function startServer() {
 	try {
-		const dbInstance = await connectToMongo(); // Await the DB connection
+		const dbInstance = await connectToMongo();
 		console.log('MongoDB connected, starting server...');
 
 		const server = http.createServer(app);
@@ -63,23 +72,22 @@ async function startServer() {
 
 			console.log('Client connected via WebSocket. ID:', ws.id);
 
-			// Pass the dbInstance directly to the handlers
 			ws.on('message', (message) =>
 				handleWebSocketMessage(ws, wss, dbInstance, message)
 			);
-			ws.on('close', () => handleWebSocketClose(ws, wss, dbInstance)); // Pass dbInstance
+			ws.on('close', () => handleWebSocketClose(ws, wss, dbInstance));
 			ws.on('error', (error) =>
 				handleWebSocketClose(ws, wss, dbInstance, error)
-			); // Pass dbInstance
+			);
 		});
 
 		server.listen(PORT, () => {
-			console.log(`Server listening on port ${PORT}`);
+			console.log(`Server is running on port ${PORT}`);
 		});
 	} catch (error) {
-		console.error('Failed to connect to MongoDB or start server:', error);
-		process.exit(1); // Exit if critical startup fails
+		console.error('Failed to start server:', error);
+		process.exit(1);
 	}
 }
 
-startServer(); // Call the async function to start everything
+startServer();
