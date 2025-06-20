@@ -1,13 +1,13 @@
 // game-handlers.js
 
 const { ObjectId } = require('mongodb');
-const WebSocket = require('ws'); // Ensure WebSocket is imported here
-const { combineCanvases, overlayCanvases } = require('./canvas-utils'); // Import both combining functions
+const WebSocket = require('ws');
+const { combineCanvases, overlayCanvases } = require('./canvas-utils');
 
 // --- Constants ---
 const COLLECTION_NAME = 'gameRooms';
-const TOTAL_SEGMENTS = 4; // Define the total number of segments for the game
-const CANVAS_WIDTH = 800; // Assuming fixed canvas dimensions
+const TOTAL_SEGMENTS = 4;
+const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
 
 // Segments for the game (Head, Torso, Legs, Feet)
@@ -15,22 +15,14 @@ const segments = ['Head', 'Torso', 'Legs', 'Feet'];
 
 // --- WebSocket Message Handler Functions ---
 
-/**
- * Handles incoming WebSocket messages, routing them to appropriate functions.
- * @param {WebSocket} ws The WebSocket instance for the current client.
- * @param {WebSocket.Server} wss The WebSocket server instance.
- * @param {Db} db The MongoDB database instance.
- * @param {string} message The raw message string received from the client.
- */
 async function handleWebSocketMessage(ws, wss, db, message) {
 	try {
-		// Ensure the message is parsed correctly (it comes as a Buffer from ws)
 		const parsedMessage = JSON.parse(message.toString());
 		console.log('Received from client:', parsedMessage.type);
 
 		const {
 			type,
-			gameRoomId, // Will be null initially for 'joinGame', then actual ID
+			gameRoomId,
 			gameCode,
 			canvasData,
 			segmentIndex,
@@ -38,7 +30,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		} = parsedMessage;
 
 		let gameRoom;
-		// Attempt to find game room by ID first if available, otherwise by code
 		if (gameRoomId) {
 			try {
 				gameRoom = await db
@@ -48,7 +39,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				console.warn(
 					`Invalid gameRoomId provided: ${gameRoomId}. Trying with gameCode.`
 				);
-				gameRoom = null; // Reset to null if ID is invalid
+				gameRoom = null;
 			}
 		}
 		if (!gameRoom && gameCode) {
@@ -69,12 +60,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 					const existingPlayer = gameRoom.players.find(
 						(p) => p === ws.playerId
-					); // Check if player ID exists
+					);
 					if (!existingPlayer) {
 						if (gameRoom.players.length < 2) {
 							gameRoom.players.push(ws.playerId);
 							isNewPlayer = true;
-							// Add nickname if new player, or update if existing but no nickname
 							const playerObj = {
 								id: ws.playerId,
 								nickname:
@@ -91,30 +81,25 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 									message: 'Game room is full.',
 								})
 							);
-							return; // Exit if room is full
+							return;
 						}
 					} else {
-						// Player is rejoining, ensure their nickname is set if not already
 						const playerObj = gameRoom.playerObjects.find(
 							(p) => p.id === ws.playerId
 						);
 						if (playerObj && !playerObj.nickname && nickname) {
 							playerObj.nickname = nickname;
-							await db
-								.collection(COLLECTION_NAME)
-								.updateOne(
-									{ _id: new ObjectId(ws.gameRoomId) },
-									{
-										$set: {
-											playerObjects:
-												gameRoom.playerObjects,
-										},
-									}
-								);
+							await db.collection(COLLECTION_NAME).updateOne(
+								{ _id: new ObjectId(ws.gameRoomId) },
+								{
+									$set: {
+										playerObjects: gameRoom.playerObjects,
+									},
+								}
+							);
 						}
 					}
 				} else {
-					// Create new game room
 					console.log(
 						`Client ${ws.id} creating new game room: ${gameCode}`
 					);
@@ -125,15 +110,15 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					};
 					const newGameRoom = {
 						gameCode: gameCode,
-						players: [ws.playerId], // Just IDs
-						playerObjects: [newPlayerObj], // Objects with ID and nickname
+						players: [ws.playerId],
+						playerObjects: [newPlayerObj],
 						playerCount: 1,
-						currentTurn: 0, // Player at index 0 starts (simplistic)
-						canvasSegments: [], // Store canvas data URLs for each segment
-						currentSegmentIndex: 0, // Start with the head
-						submittedPlayers: [], // Track who has submitted for the current segment
+						currentTurn: 0,
+						canvasSegments: [],
+						currentSegmentIndex: 0,
+						submittedPlayers: [],
 						lastActivity: new Date(),
-						status: 'waiting', // 'waiting', 'in-progress', 'completed'
+						status: 'waiting',
 					};
 					const result = await db
 						.collection(COLLECTION_NAME)
@@ -147,13 +132,12 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				}
 
 				if (isNewPlayer) {
-					// Update game room with new player
 					await db.collection(COLLECTION_NAME).updateOne(
 						{ _id: new ObjectId(ws.gameRoomId) },
 						{
 							$set: {
-								players: gameRoom.players, // Update players array (IDs)
-								playerObjects: gameRoom.playerObjects, // Update player objects
+								players: gameRoom.players,
+								playerObjects: gameRoom.playerObjects,
 								playerCount: gameRoom.players.length,
 								lastActivity: new Date(),
 							},
@@ -161,35 +145,18 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					);
 				}
 
-				// Re-fetch latest state of gameRoom after potential updates
 				gameRoom = await db
 					.collection(COLLECTION_NAME)
 					.findOne({ _id: new ObjectId(ws.gameRoomId) });
 
 				let initialCanvasData = null;
 				if (gameRoom.currentSegmentIndex > 0) {
-					// Collect all completed combined segments to show as background
-					const completedCombinedSegments = gameRoom.canvasSegments
-						.filter(
-							(seg) =>
-								seg.isCombined &&
-								seg.segmentIndex < gameRoom.currentSegmentIndex
-						)
-						.sort((a, b) => a.segmentIndex - b.segmentIndex)
-						.map((seg) => seg.dataUrl);
-
-					if (completedCombinedSegments.length > 0) {
-						try {
-							initialCanvasData = await combineCanvases(
-								completedCombinedSegments
-							);
-						} catch (combineErr) {
-							console.error(
-								'Error combining initial canvas for playerJoined:',
-								combineErr
-							);
-						}
-					}
+					// Bypass combineCanvases for initial state
+					console.log(
+						'BYPASS: Skipping combineCanvases for initial canvas data.'
+					);
+					initialCanvasData =
+						'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='; // Placeholder 1x1 transparent PNG
 				}
 
 				wss.clients.forEach((client) => {
@@ -211,15 +178,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							clientCanDraw = false;
 							clientIsWaitingForOthers = false;
 						} else {
-							// gameRoom.playerCount === 2 and status is 'in-progress' or about to be
 							if (gameRoom.currentSegmentIndex === 0) {
-								// For the Head segment, both players can draw simultaneously
 								messageForClient = `Game ${gameCode} is ready! Draw the ${segments[0]}.`;
 								clientCanDraw = true;
 								clientIsWaitingForOthers = false;
 							} else {
-								// For subsequent segments
-								// If this client has already submitted for the current segment, they wait.
 								if (
 									gameRoom.submittedPlayers.includes(
 										client.playerId
@@ -246,36 +209,33 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 									gameRoom.currentSegmentIndex === 0 &&
 									gameRoom.status === 'waiting'
 										? 'gameStarted'
-										: 'playerJoined', // Use gameStarted for initial start
+										: 'playerJoined',
 								playerCount: gameRoom.playerCount,
 								message: messageForClient,
 								gameRoomId: gameRoom._id.toString(),
 								currentSegmentIndex:
 									gameRoom.currentSegmentIndex,
-								canDraw: clientCanDraw, // Consistent name for frontend
-								isWaitingForOthers: clientIsWaitingForOthers, // Consistent name for frontend
-								canvasData: initialCanvasData, // Send combined background for ongoing games
+								canDraw: clientCanDraw,
+								isWaitingForOthers: clientIsWaitingForOthers,
+								canvasData: initialCanvasData,
 							})
 						);
 					}
 				});
 
-				// If 2 players are now present and game was waiting, update status to in-progress
 				if (
 					gameRoom.playerCount === 2 &&
 					gameRoom.status === 'waiting'
 				) {
-					await db
-						.collection(COLLECTION_NAME)
-						.updateOne(
-							{ _id: new ObjectId(ws.gameRoomId) },
-							{
-								$set: {
-									status: 'in-progress',
-									currentSegmentIndex: 0,
-								},
-							}
-						);
+					await db.collection(COLLECTION_NAME).updateOne(
+						{ _id: new ObjectId(ws.gameRoomId) },
+						{
+							$set: {
+								status: 'in-progress',
+								currentSegmentIndex: 0,
+							},
+						}
+					);
 					console.log('Backend: Game status set to in-progress.');
 				}
 				break;
@@ -369,35 +329,37 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					`Player ${ws.id} submitted segment ${segmentIndex} for game ${gameRoom.gameCode}.`
 				);
 
-				// Re-fetch updated game room after saving submission
 				gameRoom = await db
 					.collection(COLLECTION_NAME)
 					.findOne({ _id: new ObjectId(ws.gameRoomId) });
 
-				// Notify the submitting player
 				ws.send(
 					JSON.stringify({
 						type: 'submissionReceived',
 						message:
 							'Your segment submitted. Waiting for other players.',
-						canDraw: false, // Submitting player cannot draw
-						isWaitingForOthers: true, // Submitting player is now waiting
+						canDraw: false,
+						isWaitingForOthers: true,
 					})
 				);
 
-				// Check if all players have submitted for the current segment
 				if (gameRoom.submittedPlayers.length === gameRoom.playerCount) {
 					console.log(
-						`All players submitted for segment ${segmentIndex}.`
-					);
-					await advanceSegment(gameRoom._id, wss, db); // Pass db instance
+						`SERVER: All players submitted for segment ${segmentIndex}. Calling advanceSegment.`
+					); // ADDED LOG
+					await advanceSegment(gameRoom._id, wss, db);
 				} else {
-					// Notify other players that one has submitted (they can still draw)
+					console.log(
+						`SERVER: Waiting for ${
+							gameRoom.playerCount -
+							gameRoom.submittedPlayers.length
+						} more players to submit.`
+					); // ADDED LOG
 					wss.clients.forEach((client) => {
 						if (
 							client.readyState === WebSocket.OPEN &&
 							client.gameRoomId === ws.gameRoomId &&
-							client.playerId !== ws.playerId // Don't send back to self
+							client.playerId !== ws.playerId
 						) {
 							client.send(
 								JSON.stringify({
@@ -407,7 +369,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 									submittedCount:
 										updatedSubmittedPlayers.length,
 									totalPlayers: gameRoom.playerCount,
-									// Other players should still be able to draw if they haven't submitted
 									canDraw: true,
 									isWaitingForOthers: false,
 								})
@@ -417,7 +378,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				}
 				break;
 
-			case 'requestInitialState': // For rejoining or refreshing
+			case 'requestInitialState':
 				if (!gameRoomId) {
 					ws.send(
 						JSON.stringify({
@@ -439,27 +400,12 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					let currentCanvasData = null;
 
 					if (gameRoom.currentSegmentIndex > 0) {
-						const previousCombinedSegments = gameRoom.canvasSegments
-							.filter(
-								(seg) =>
-									seg.isCombined &&
-									seg.segmentIndex <
-										gameRoom.currentSegmentIndex
-							)
-							.sort((a, b) => a.segmentIndex - b.segmentIndex)
-							.map((seg) => seg.dataUrl);
-						if (previousCombinedSegments.length > 0) {
-							try {
-								currentCanvasData = await combineCanvases(
-									previousCombinedSegments
-								);
-							} catch (combineErr) {
-								console.error(
-									'Error combining previous segments for initial state:',
-									combineErr
-								);
-							}
-						}
+						// BYPASS: Skipping combineCanvases for requestInitialState
+						console.log(
+							'BYPASS: Skipping combineCanvases for requestInitialState.'
+						);
+						currentCanvasData =
+							'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='; // Placeholder 1x1 transparent PNG
 					}
 
 					if (gameRoom.playerCount < 2) {
@@ -471,9 +417,8 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							'Game is over! View the final artwork.';
 						clientCanDraw = false;
 						clientIsWaitingForOthers = false;
-						currentCanvasData = gameRoom.finalArtwork; // Send final artwork if game over
+						currentCanvasData = gameRoom.finalArtwork; // This might still try to load the final artwork if it was combined before
 					} else {
-						// 2 players, in-progress
 						if (gameRoom.submittedPlayers.includes(ws.playerId)) {
 							messageForClient =
 								'You have submitted your segment. Waiting for other players...';
@@ -492,7 +437,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 					ws.send(
 						JSON.stringify({
-							type: 'playerJoined', // Re-use playerJoined to update state consistently on client
+							type: 'playerJoined',
 							gameCode: gameRoom.gameCode,
 							gameRoomId: gameRoom._id.toString(),
 							playerCount: gameRoom.playerCount,
@@ -514,7 +459,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				break;
 
 			case 'clearCanvas':
-				// Clear the canvas for all players in the room
 				if (!ws.gameRoomId) {
 					ws.send(
 						JSON.stringify({
@@ -529,26 +473,22 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					.findOne({ _id: new ObjectId(ws.gameRoomId) });
 
 				if (gameRoom) {
-					// Reset canvasSegments and submittedPlayers for the current segment
 					const updatedCanvasSegments =
 						gameRoom.canvasSegments.filter(
 							(seg) =>
 								seg.segmentIndex !==
 								gameRoom.currentSegmentIndex
 						);
-
-					await db
-						.collection(COLLECTION_NAME)
-						.updateOne(
-							{ _id: new ObjectId(ws.gameRoomId) },
-							{
-								$set: {
-									canvasSegments: updatedCanvasSegments,
-									submittedPlayers: [],
-									lastActivity: new Date(),
-								},
-							}
-						);
+					await db.collection(COLLECTION_NAME).updateOne(
+						{ _id: new ObjectId(ws.gameRoomId) },
+						{
+							$set: {
+								canvasSegments: updatedCanvasSegments,
+								submittedPlayers: [],
+								lastActivity: new Date(),
+							},
+						}
+					);
 
 					wss.clients.forEach((client) => {
 						if (
@@ -560,9 +500,9 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 									type: 'clearCanvas',
 									message:
 										'Canvas cleared by host. Redraw your segment!',
-									canvasData: null, // Ensure canvas is reset on frontend
-									canDraw: true, // Enable drawing after clear
-									isWaitingForOthers: false, // Not waiting
+									canvasData: null,
+									canDraw: true,
+									isWaitingForOthers: false,
 								})
 							);
 						}
@@ -588,215 +528,281 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 	}
 }
 
-/**
- * Advances the game to the next segment or ends the game.
- * @param {ObjectId} gameRoomObjectId The MongoDB ObjectId of the game room.
- * @param {WebSocket.Server} wss The WebSocket server instance.
- * @param {Db} db The MongoDB database instance. // Added db parameter
- */
 async function advanceSegment(gameRoomObjectId, wss, db) {
-	let gameRoom = await db
-		.collection(COLLECTION_NAME)
-		.findOne({ _id: gameRoomObjectId });
+	console.log(
+		`SERVER: Entering advanceSegment function for game room ObjectId: ${gameRoomObjectId}`
+	);
+	console.log(`SERVER: Type of gameRoomObjectId: ${typeof gameRoomObjectId}`);
+	console.log(
+		`SERVER: Is gameRoomObjectId an ObjectId instance? ${
+			gameRoomObjectId instanceof ObjectId
+		}`
+	);
 
-	if (!gameRoom) {
-		console.error(
-			`Game room ${gameRoomObjectId} not found for segment advancement.`
-		);
-		return;
-	}
-
-	// Get all canvas data URLs submitted for the segment that *just finished*
-	const completedSegmentDrawings = gameRoom.canvasSegments
-		.filter(
-			(seg) =>
-				seg.segmentIndex === gameRoom.currentSegmentIndex &&
-				!seg.isCombined
-		)
-		.map((seg) => seg.dataUrl);
-
-	let combinedCanvasForNextSegment = null;
 	try {
-		if (completedSegmentDrawings.length > 0) {
-			combinedCanvasForNextSegment = await overlayCanvases(
-				completedSegmentDrawings,
-				CANVAS_WIDTH,
-				CANVAS_HEIGHT
-			);
-			console.log(
-				`Combined current segment (${gameRoom.currentSegmentIndex}) drawings.`
-			);
-		}
-	} catch (combineErr) {
-		console.error(
-			`Error combining current segment ${gameRoom.currentSegmentIndex} drawings:`,
-			combineErr
-		);
-		combinedCanvasForNextSegment = null;
-	}
-
-	// After combining the *current* segment's individual drawings, add it as a new "combined" entry
-	if (combinedCanvasForNextSegment) {
-		gameRoom.canvasSegments.push({
-			segmentIndex: gameRoom.currentSegmentIndex, // This refers to the segment that was just completed
-			dataUrl: combinedCanvasForNextSegment,
-			isCombined: true, // Mark this as a combined segment
-			createdAt: new Date(),
-		});
-	}
-
-	gameRoom.currentSegmentIndex++; // Move to the next segment for drawing
-	gameRoom.submittedPlayers = []; // Reset submitted players for the new segment
-
-	if (gameRoom.currentSegmentIndex >= TOTAL_SEGMENTS) {
-		// Game Over! Combine all combined segments into the final artwork
-		gameRoom.status = 'completed';
-		console.log(`Game ${gameRoom.gameCode} completed!`);
-
-		const allCombinedSegments = gameRoom.canvasSegments
-			.filter((seg) => seg.isCombined)
-			.sort((a, b) => a.segmentIndex - b.segmentIndex)
-			.map((seg) => seg.dataUrl);
-
-		let finalArtworkData = null;
-		try {
-			// Combine all previous combined segments vertically for the final image
-			finalArtworkData = await combineCanvases(allCombinedSegments);
-			console.log(
-				`Final artwork combined. Data URL length: ${
-					finalArtworkData ? finalArtworkData.length : 0
-				}`
-			);
-		} catch (finalCombineErr) {
-			console.error('Error combining final artwork:', finalCombineErr);
-		}
-
-		await db.collection(COLLECTION_NAME).updateOne(
-			{ _id: gameRoomObjectId },
-			{
-				$set: {
-					currentSegmentIndex: gameRoom.currentSegmentIndex,
-					submittedPlayers: gameRoom.submittedPlayers,
-					lastActivity: new Date(),
-					status: 'completed',
-					finalArtwork: finalArtworkData, // Store the final image
-					canvasSegments: gameRoom.canvasSegments, // Save updated segments with combined ones
-				},
-			}
+		console.log(
+			`SERVER: advanceSegment called for game room ${gameRoomObjectId}.`
 		);
 
-		wss.clients.forEach((client) => {
-			if (
-				client.readyState === WebSocket.OPEN &&
-				client.gameRoomId === gameRoom._id.toString()
-			) {
-				client.send(
-					JSON.stringify({
-						type: 'gameOver',
-						message: 'Game Over! The Exquisite Corpse is complete!',
-						finalArtwork: finalArtworkData, // Send final artwork
-						gameCode: gameRoom.gameCode,
-						currentSegmentIndex: gameRoom.currentSegmentIndex,
-						canDraw: false, // No drawing
-						isWaitingForOthers: false, // No waiting
-					})
-				);
-			}
-		});
-	} else {
-		// Advance to next segment
-		// Only get the *last* combined segment to show as background for the *next* drawing phase
-		const lastCombinedSegmentData = gameRoom.canvasSegments
+		let gameRoom = await db
+			.collection(COLLECTION_NAME)
+			.findOne({ _id: gameRoomObjectId });
+
+		if (!gameRoom) {
+			console.error(
+				`SERVER ERROR: Game room ${gameRoomObjectId} not found for segment advancement.`
+			);
+			return;
+		}
+		console.log(
+			`SERVER: Game room fetched successfully. Current segmentIndex: ${gameRoom.currentSegmentIndex}`
+		);
+
+		const completedSegmentDrawings = gameRoom.canvasSegments
 			.filter(
 				(seg) =>
-					seg.isCombined &&
-					seg.segmentIndex === gameRoom.currentSegmentIndex - 1
+					seg.segmentIndex === gameRoom.currentSegmentIndex &&
+					!seg.isCombined
 			)
-			.map((seg) => seg.dataUrl)[0];
+			.map((seg) => seg.dataUrl);
 
-		await db.collection(COLLECTION_NAME).updateOne(
-			{ _id: gameRoomObjectId },
-			{
-				$set: {
-					currentSegmentIndex: gameRoom.currentSegmentIndex,
-					submittedPlayers: gameRoom.submittedPlayers,
-					lastActivity: new Date(),
-					status: 'in-progress', // Ensure status remains in-progress
-					canvasSegments: gameRoom.canvasSegments, // Save updated segments with combined ones
-				},
-			}
+		console.log(
+			`SERVER: Found ${completedSegmentDrawings.length} drawings for current segment (${gameRoom.currentSegmentIndex}).`
 		);
+		console.log(
+			`SERVER: First drawing dataUrl length: ${
+				completedSegmentDrawings[0]
+					? completedSegmentDrawings[0].length
+					: 'N/A'
+			}`
+		);
+		console.log(
+			`SERVER: Second drawing dataUrl length: ${
+				completedSegmentDrawings[1]
+					? completedSegmentDrawings[1].length
+					: 'N/A'
+			}`
+		);
+		if (
+			completedSegmentDrawings[0] &&
+			completedSegmentDrawings[0].length < 100
+		) {
+			console.log(
+				`SERVER: First drawing dataUrl snippet: ${completedSegmentDrawings[0].substring(
+					0,
+					50
+				)}...`
+			);
+		}
+		if (
+			completedSegmentDrawings[1] &&
+			completedSegmentDrawings[1].length < 100
+		) {
+			console.log(
+				`SERVER: Second drawing dataUrl snippet: ${completedSegmentDrawings[1].substring(
+					0,
+					50
+				)}...`
+			);
+		}
 
-		// Notify all players in the room that the segment has advanced
-		// Also send the combined image of previous segments as the base for the new drawing
-		wss.clients.forEach((client) => {
-			if (
-				client.readyState === WebSocket.OPEN &&
-				client.gameRoomId === gameRoom._id.toString()
-			) {
-				client.send(
-					JSON.stringify({
-						type: 'segmentAdvanced',
-						gameCode: gameRoom.gameCode,
-						currentSegmentIndex: gameRoom.currentSegmentIndex,
-						canvasData: lastCombinedSegmentData, // Send the combined previous segment as background
-						message: `New segment started! Draw the ${
-							segments[gameRoom.currentSegmentIndex]
-						}.`,
-						canDraw: true, // All players can draw again for the new segment
-						isWaitingForOthers: false, // No longer waiting for previous segment submissions
-					})
+		let combinedCanvasForNextSegment = null;
+		try {
+			if (completedSegmentDrawings.length > 0) {
+				// BYPASS: Skipping overlayCanvases for segment combination.
+				console.log(
+					`BYPASS: Skipping overlayCanvases for current segment. Setting placeholder.`
+				);
+				combinedCanvasForNextSegment =
+					'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='; // Placeholder 1x1 transparent PNG
+
+				const combinedSegmentEntry = {
+					segmentIndex: gameRoom.currentSegmentIndex,
+					dataUrl: combinedCanvasForNextSegment,
+					isCombined: true,
+					createdAt: new Date(),
+				};
+
+				const updatedCanvasSegments = Array.isArray(
+					gameRoom.canvasSegments
+				)
+					? [...gameRoom.canvasSegments, combinedSegmentEntry]
+					: [combinedSegmentEntry];
+
+				console.log(
+					`SERVER: Updating game room with combined segment entry (bypassed image processing).`
+				);
+				await db.collection(COLLECTION_NAME).updateOne(
+					{ _id: gameRoomObjectId },
+					{
+						$set: {
+							canvasSegments: updatedCanvasSegments,
+						},
+					}
 				);
 				console.log(
-					`Sent segmentAdvanced message to client ${
-						client.id
-					}. Canvas data sent: ${!!lastCombinedSegmentData}`
+					`SERVER: Game room updated with combined segment entry.`
+				);
+			} else {
+				console.warn(
+					`SERVER WARNING: No completed drawings found for current segment ${gameRoom.currentSegmentIndex}. Cannot combine.`
 				);
 			}
-		});
+		} catch (error) {
+			console.error(
+				'SERVER ERROR: Error during canvas combination or DB update of combined entry in advanceSegment (BYPASS ACTIVE):',
+				error
+			);
+			return;
+		}
+
+		const nextSegmentIndex = gameRoom.currentSegmentIndex + 1;
+		let finalArtwork = null;
+
+		if (nextSegmentIndex < TOTAL_SEGMENTS) {
+			console.log(
+				`SERVER: Advancing to next segment: ${nextSegmentIndex}.`
+			);
+			await db.collection(COLLECTION_NAME).updateOne(
+				{ _id: gameRoomObjectId },
+				{
+					$set: {
+						currentSegmentIndex: nextSegmentIndex,
+						submittedPlayers: [],
+						lastActivity: new Date(),
+						status: 'in-progress',
+					},
+				}
+			);
+			console.log(
+				`SERVER: Game ${gameRoom.gameCode} advanced to segment ${nextSegmentIndex} in DB.`
+			);
+
+			// Re-fetch gameRoom to get the latest canvasSegments for background
+			gameRoom = await db
+				.collection(COLLECTION_NAME)
+				.findOne({ _id: gameRoomObjectId });
+
+			let combinedPreviousSegments = null;
+			if (gameRoom.currentSegmentIndex > 0) {
+				// BYPASS: Skipping combineCanvases for next background
+				console.log(
+					`BYPASS: Skipping combineCanvases for next background. Setting placeholder.`
+				);
+				combinedPreviousSegments =
+					'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='; // Placeholder 1x1 transparent PNG
+			}
+
+			wss.clients.forEach((client) => {
+				if (
+					client.readyState === WebSocket.OPEN &&
+					client.gameRoomId === gameRoomObjectId.toString()
+				) {
+					const messageToSend = JSON.stringify({
+						type: 'segmentAdvanced',
+						currentSegmentIndex: nextSegmentIndex,
+						message: `Draw the ${segments[nextSegmentIndex]}.`,
+						canvasData: combinedPreviousSegments, // This will be the placeholder
+						canDraw: true,
+						isWaitingForOthers: false,
+					});
+					console.log(
+						`SERVER: Sending segmentAdvanced to client ${
+							client.playerId
+						} (in game ${gameRoomObjectId}). Message: ${messageToSend.substring(
+							0,
+							200
+						)}...`
+					);
+					client.send(messageToSend);
+				} else {
+					console.log(
+						`SERVER: Skipping client ${client.playerId} for segmentAdvanced broadcast. ReadyState: ${client.readyState}, GameRoomId: ${client.gameRoomId}`
+					);
+				}
+			});
+			console.log(
+				`SERVER: Finished broadcasting segment advanced message.`
+			);
+		} else {
+			console.log(
+				`SERVER: Game ${gameRoom.gameCode} is complete! Initiating game over.`
+			);
+
+			// BYPASS: Skipping combineCanvases for final artwork
+			console.log(
+				`BYPASS: Skipping combineCanvases for final artwork. Setting placeholder.`
+			);
+			finalArtwork =
+				'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='; // Placeholder 1x1 transparent PNG
+
+			await db.collection(COLLECTION_NAME).updateOne(
+				{ _id: gameRoomObjectId },
+				{
+					$set: {
+						status: 'completed',
+						finalArtwork: finalArtwork,
+						lastActivity: new Date(),
+						canvasSegments: gameRoom.canvasSegments,
+					},
+				}
+			);
+			console.log('SERVER: Game status set to completed in DB.');
+
+			wss.clients.forEach((client) => {
+				if (
+					client.readyState === WebSocket.OPEN &&
+					client.gameRoomId === gameRoomObjectId.toString()
+				) {
+					const messageToSend = JSON.stringify({
+						type: 'gameOver',
+						message:
+							'The Exquisite Corpse is complete! View the final artwork.',
+						finalArtwork: finalArtwork, // This will be the placeholder
+						currentSegmentIndex: TOTAL_SEGMENTS,
+						canDraw: false,
+						isWaitingForOthers: false,
+					});
+					console.log(
+						`SERVER: Sending gameOver to client ${
+							client.playerId
+						}. Message: ${messageToSend.substring(0, 200)}...`
+					);
+					client.send(messageToSend);
+				}
+			});
+			console.log(`SERVER: Finished broadcasting game over message.`);
+		}
+	} catch (error) {
+		console.error('SERVER FATAL ERROR in advanceSegment:', error);
 	}
 }
 
-/**
- * Handles WebSocket client disconnections.
- * @param {WebSocket} ws The WebSocket instance for the current client.
- * @param {WebSocket.Server} wss The WebSocket server instance.
- * @param {Db} db The MongoDB database instance.
- */
-const handleWebSocketClose = async (ws, wss, db, error) => {
-	// IMPORTANT: Now accepts 'db'
-	console.log(`Client disconnected. ID: ${ws.id}`);
+async function handleWebSocketClose(ws, wss, db, error) {
 	if (error) {
-		console.error('WebSocket error before close:', error);
-	}
-
-	// Add a check to ensure db is provided (for robustness)
-	if (!db) {
 		console.error(
-			'Database instance not provided to handleWebSocketClose. Cannot update game room on disconnect.'
+			`WebSocket closed due to error for client ${ws.id}:`,
+			error
 		);
-		return;
+	} else {
+		console.log(`Client ${ws.id} disconnected.`);
 	}
 
 	if (ws.gameRoomId) {
 		try {
-			// Use the passed db parameter here
-			const gameRoom = await db
+			let gameRoom = await db
 				.collection(COLLECTION_NAME)
 				.findOne({ _id: new ObjectId(ws.gameRoomId) });
 
 			if (gameRoom) {
 				const updatedPlayers = gameRoom.players.filter(
-					(playerId) => playerId !== ws.playerId
+					(id) => id !== ws.playerId
 				);
-				// Also remove from playerObjects if you're using that for tracking
-				const updatedPlayerObjects = gameRoom.playerObjects
-					? gameRoom.playerObjects.filter(
-							(obj) => obj.id !== ws.playerId
-					  )
-					: [];
+				const updatedPlayerObjects = gameRoom.playerObjects.filter(
+					(p) => p.id !== ws.playerId
+				);
+				const newPlayerCount = updatedPlayers.length;
 
-				let newPlayerCount = updatedPlayers.length;
 				if (newPlayerCount === 0) {
 					await db
 						.collection(COLLECTION_NAME)
@@ -829,8 +835,8 @@ const handleWebSocketClose = async (ws, wss, db, error) => {
 									message:
 										'Other player disconnected. Waiting for a new player to join...',
 									playerCount: newPlayerCount,
-									canDraw: false, // Assume drawing is paused until new player joins
-									isWaitingForOthers: false, // Not waiting for submission anymore
+									canDraw: false,
+									isWaitingForOthers: false,
 								})
 							);
 						}
@@ -842,12 +848,13 @@ const handleWebSocketClose = async (ws, wss, db, error) => {
 				);
 			}
 		} catch (err) {
-			console.error('Error handling WebSocket close:', err);
+			console.error(
+				`Error handling WebSocket close for client ${ws.id}:`,
+				err
+			);
 		}
-	} else {
-		console.log('Disconnected client was not in a game room.');
 	}
-};
+}
 
 module.exports = {
 	handleWebSocketMessage,

@@ -1,6 +1,10 @@
 // canvas-utils.js
 
 // IMPORTANT: Ensure 'canvas' npm package is installed: npm install canvas
+// For 'canvas' package, you might need system dependencies like Cairo.
+// On Ubuntu/Debian: sudo apt-get install build-essential libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+// On macOS: brew install cairo pango libjpeg giflib librsvg
+// On Windows: More complex, typically involves installing GTK+ or compiling. See node-canvas GitHub for details.
 const { createCanvas, Image } = require('canvas');
 
 /**
@@ -11,119 +15,233 @@ const { createCanvas, Image } = require('canvas');
  */
 async function combineCanvases(segmentDataUrls) {
 	if (!segmentDataUrls || segmentDataUrls.length === 0) {
-		console.warn('combineCanvases received no segments to combine.');
+		console.warn(
+			'COMBINE: combineCanvases received no segments to combine.'
+		);
 		return ''; // Return an empty string if no segments
 	}
+
+	console.log(
+		`COMBINE: Starting combineCanvases with ${segmentDataUrls.length} segments.`
+	);
+	console.log(
+		`COMBINE: First segment dataUrl length: ${
+			segmentDataUrls[0] ? segmentDataUrls[0].length : 'N/A'
+		}`
+	); // NEW LOG
+	console.log(
+		`COMBINE: Second segment dataUrl length: ${
+			segmentDataUrls[1] ? segmentDataUrls[1].length : 'N/A'
+		}`
+	); // NEW LOG
 
 	// Load all images first to determine total dimensions
 	const images = [];
 	let totalHeight = 0;
-	let maxWidth = 0; // Assuming all segments have the same width, but we'll find the max just in case
+	let maxWidth = 0;
 
-	for (const dataUrl of segmentDataUrls) {
+	for (let i = 0; i < segmentDataUrls.length; i++) {
+		const dataUrl = segmentDataUrls[i];
 		if (!dataUrl) {
 			console.warn(
-				'Skipping null or empty segmentDataUrl in combineCanvases.'
+				`COMBINE: Skipping null or empty segmentDataUrl at index ${i}.`
 			);
 			continue;
 		}
-		const img = new Image();
-		img.src = dataUrl;
-		images.push(img);
+		try {
+			const img = new Image();
+			img.src = dataUrl;
+			images.push(img);
 
-		// We need to wait for each image to load to get its dimensions
-		await new Promise((resolve, reject) => {
-			img.onload = () => {
-				totalHeight += img.height;
-				if (img.width > maxWidth) {
-					maxWidth = img.width;
-				}
-				resolve();
-			};
-			img.onerror = (err) => {
-				console.error(
-					'Failed to load image for combination:',
-					err,
-					dataUrl.substring(0, 50) + '...'
-				);
-				// Even if an image fails, we try to combine what we have, so resolve but log error
-				resolve();
-			};
-		});
-	}
-
-	if (images.length === 0 || maxWidth === 0 || totalHeight === 0) {
-		console.warn(
-			'No valid images loaded for combination or dimensions are zero.'
-		);
-		return ''; // Cannot combine if no valid images or zero dimensions
-	}
-
-	// Create a new canvas element
-	const canvas = createCanvas(maxWidth, totalHeight); // Using 'canvas' npm package for Node.js
-	const ctx = canvas.getContext('2d');
-
-	let currentY = 0;
-	for (const img of images) {
-		if (img.width > 0 && img.height > 0) {
-			// Only draw if image loaded successfully
-			ctx.drawImage(img, 0, currentY, maxWidth, img.height);
-			currentY += img.height;
+			await new Promise((resolve, reject) => {
+				img.onload = () => {
+					if (img.width > maxWidth) {
+						maxWidth = img.width;
+					}
+					totalHeight += img.height;
+					resolve();
+				};
+				img.onerror = (err) => {
+					console.error(
+						`COMBINE ERROR: Failed to load image from dataUrl (index ${i}):`,
+						err
+					);
+					reject(
+						new Error(
+							`Failed to load image for combineCanvases at index ${i}`
+						)
+					);
+				};
+			});
+		} catch (loadErr) {
+			console.error(
+				`COMBINE ERROR: Caught error during image loading setup (index ${i}):`,
+				loadErr
+			);
+			throw loadErr;
 		}
 	}
 
-	return canvas.toDataURL();
+	if (images.length === 0) {
+		console.warn('COMBINE: No valid images loaded for combination.');
+		return '';
+	}
+
+	console.log(
+		`COMBINE: All images loaded. MaxWidth: ${maxWidth}, TotalHeight: ${totalHeight}. Creating canvas...`
+	);
+	const canvas = createCanvas(maxWidth, totalHeight);
+	const ctx = canvas.getContext('2d');
+
+	let currentY = 0;
+	for (let i = 0; i < images.length; i++) {
+		const img = images[i];
+		try {
+			ctx.drawImage(img, 0, currentY, maxWidth, img.height);
+			currentY += img.height;
+			console.log(
+				`COMBINE: Drew image ${i} at Y=${currentY - img.height}.`
+			);
+		} catch (drawErr) {
+			console.error(
+				`COMBINE ERROR: Failed to draw image (index ${i}) onto canvas:`,
+				drawErr
+			);
+			throw drawErr;
+		}
+	}
+
+	const resultDataUrl = canvas.toDataURL('image/png');
+	console.log('COMBINE: combineCanvases finished successfully.');
+	return resultDataUrl;
 }
 
 /**
- * Overlays an array of base64 image data URLs onto a single canvas.
- * Assumes all images are meant to be overlaid on the same canvas area.
+ * Overlays multiple base64 image data URLs onto a single canvas of specified dimensions.
+ * Useful for combining multiple player segments into a single transparent layer, or adding a new layer to a background.
  * @param {string[]} segmentDataUrls An array of base64 data URLs for images to overlay.
  * @param {number} targetWidth The desired width of the resulting canvas.
  * @param {number} targetHeight The desired height of the resulting canvas.
  * @returns {Promise<string>} A promise that resolves with the base64 data URL of the overlaid canvas.
  */
 async function overlayCanvases(segmentDataUrls, targetWidth, targetHeight) {
-	if (
-		!segmentDataUrls ||
-		segmentDataUrls.length === 0 ||
-		targetWidth <= 0 ||
-		targetHeight <= 0
-	) {
-		console.warn('overlayCanvases received invalid inputs.');
+	console.log(`OVERLAY: Entering overlayCanvases function.`);
+	console.log(`OVERLAY: Received ${segmentDataUrls.length} data URLs.`); // NEW LOG
+	console.log(`OVERLAY: Target dimensions: ${targetWidth}x${targetHeight}.`); // NEW LOG
+	if (segmentDataUrls[0]) {
+		console.log(
+			`OVERLAY: First dataUrl length: ${segmentDataUrls[0].length}`
+		); // NEW LOG
+		console.log(
+			`OVERLAY: First dataUrl starts with: ${segmentDataUrls[0].substring(
+				0,
+				50
+			)}...`
+		); // NEW LOG
+	}
+	if (segmentDataUrls[1]) {
+		console.log(
+			`OVERLAY: Second dataUrl length: ${segmentDataUrls[1].length}`
+		); // NEW LOG
+		console.log(
+			`OVERLAY: Second dataUrl starts with: ${segmentDataUrls[1].substring(
+				0,
+				50
+			)}...`
+		); // NEW LOG
+	}
+
+	if (!segmentDataUrls || segmentDataUrls.length === 0) {
+		console.warn(
+			'OVERLAY: overlayCanvases received no segments to overlay or invalid inputs.'
+		);
+		return '';
+	}
+	if (targetWidth <= 0 || targetHeight <= 0) {
+		console.warn(
+			`OVERLAY: Invalid target dimensions: Width=${targetWidth}, Height=${targetHeight}.`
+		);
 		return '';
 	}
 
-	const canvas = createCanvas(targetWidth, targetHeight);
-	const ctx = canvas.getContext('2d');
+	try {
+		console.log(
+			`OVERLAY: Creating canvas with dimensions ${targetWidth}x${targetHeight}.`
+		);
+		const canvas = createCanvas(targetWidth, targetHeight);
+		const ctx = canvas.getContext('2d');
 
-	// Ensure background is transparent or white for proper overlay if desired
-	ctx.clearRect(0, 0, targetWidth, targetHeight); // Clear to transparent
+		ctx.clearRect(0, 0, targetWidth, targetHeight);
+		console.log(`OVERLAY: Canvas created and cleared.`);
 
-	// Load all images and draw them onto the canvas
-	for (const dataUrl of segmentDataUrls) {
-		if (!dataUrl) continue;
-		const img = new Image();
-		img.src = dataUrl;
-
-		await new Promise((resolve) => {
-			img.onload = () => {
-				// Draw each image scaled to fit the target dimensions
-				ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-				resolve();
-			};
-			img.onerror = (err) => {
+		for (let i = 0; i < segmentDataUrls.length; i++) {
+			const dataUrl = segmentDataUrls[i];
+			if (!dataUrl) {
 				console.warn(
-					'Failed to load image for overlay:',
-					dataUrl.substring(0, 50) + '...',
-					err
+					`OVERLAY: Skipping null or empty dataUrl at index ${i}.`
 				);
-				resolve(); // Still resolve to continue with other images
-			};
-		});
-	}
+				continue;
+			}
 
-	return canvas.toDataURL();
+			try {
+				const img = new Image();
+				img.src = dataUrl;
+				console.log(
+					`OVERLAY: Loading image from dataUrl (index ${i})...`
+				);
+
+				await new Promise((resolve, reject) => {
+					img.onload = () => {
+						try {
+							ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+							console.log(
+								`OVERLAY: Successfully drew image ${i}.`
+							);
+							resolve();
+						} catch (drawErr) {
+							console.error(
+								`OVERLAY ERROR: Error drawing image ${i} onto canvas:`,
+								drawErr
+							);
+							reject(drawErr);
+						}
+					};
+					img.onerror = (err) => {
+						console.error(
+							`OVERLAY ERROR: Failed to load image from dataUrl (index ${i}):`,
+							err
+						);
+						reject(
+							new Error(
+								`Failed to load image for overlay at index ${i}`
+							)
+						);
+					};
+				});
+			} catch (loadOrDrawErr) {
+				console.error(
+					`OVERLAY ERROR: Caught error during image processing loop (index ${i}):`,
+					loadOrDrawErr
+				);
+				throw loadOrDrawErr;
+			}
+		}
+
+		const resultDataUrl = canvas.toDataURL('image/png');
+		console.log(
+			'OVERLAY: overlayCanvases finished successfully, returning data URL.'
+		);
+		return resultDataUrl;
+	} catch (overallErr) {
+		console.error(
+			'OVERLAY FATAL ERROR: An unhandled error occurred in overlayCanvases:',
+			overallErr
+		);
+		throw overallErr;
+	}
 }
 
-module.exports = { combineCanvases, overlayCanvases };
+module.exports = {
+	combineCanvases,
+	overlayCanvases,
+};
