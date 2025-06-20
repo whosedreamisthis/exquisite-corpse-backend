@@ -1,10 +1,6 @@
 // canvas-utils.js
 
 // IMPORTANT: Ensure 'canvas' npm package is installed: npm install canvas
-// For 'canvas' package, you might need system dependencies like Cairo.
-// On Ubuntu/Debian: sudo apt-get install build-essential libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
-// On macOS: brew install cairo pango libjpeg giflib librsvg
-// On Windows: More complex, typically involves installing GTK+ or compiling. See node-canvas GitHub for details.
 const { createCanvas, Image } = require('canvas');
 
 /**
@@ -15,233 +11,199 @@ const { createCanvas, Image } = require('canvas');
  */
 async function combineCanvases(segmentDataUrls) {
 	if (!segmentDataUrls || segmentDataUrls.length === 0) {
-		console.warn(
-			'COMBINE: combineCanvases received no segments to combine.'
-		);
+		console.warn('combineCanvases received no segments to combine.');
 		return ''; // Return an empty string if no segments
 	}
-
-	console.log(
-		`COMBINE: Starting combineCanvases with ${segmentDataUrls.length} segments.`
-	);
-	console.log(
-		`COMBINE: First segment dataUrl length: ${
-			segmentDataUrls[0] ? segmentDataUrls[0].length : 'N/A'
-		}`
-	); // NEW LOG
-	console.log(
-		`COMBINE: Second segment dataUrl length: ${
-			segmentDataUrls[1] ? segmentDataUrls[1].length : 'N/A'
-		}`
-	); // NEW LOG
 
 	// Load all images first to determine total dimensions
 	const images = [];
 	let totalHeight = 0;
-	let maxWidth = 0;
+	let maxWidth = 0; // Assuming all segments have the same width, but we'll find the max just in case
 
-	for (let i = 0; i < segmentDataUrls.length; i++) {
-		const dataUrl = segmentDataUrls[i];
+	for (const dataUrl of segmentDataUrls) {
 		if (!dataUrl) {
 			console.warn(
-				`COMBINE: Skipping null or empty segmentDataUrl at index ${i}.`
+				'Skipping null or empty segmentDataUrl in combineCanvases.'
 			);
 			continue;
 		}
-		try {
-			const img = new Image();
-			img.src = dataUrl;
-			images.push(img);
+		const img = new Image();
+		img.src = dataUrl;
+		images.push(img);
 
-			await new Promise((resolve, reject) => {
-				img.onload = () => {
-					if (img.width > maxWidth) {
-						maxWidth = img.width;
-					}
-					totalHeight += img.height;
-					resolve();
-				};
-				img.onerror = (err) => {
-					console.error(
-						`COMBINE ERROR: Failed to load image from dataUrl (index ${i}):`,
-						err
-					);
-					reject(
-						new Error(
-							`Failed to load image for combineCanvases at index ${i}`
-						)
-					);
-				};
-			});
-		} catch (loadErr) {
-			console.error(
-				`COMBINE ERROR: Caught error during image loading setup (index ${i}):`,
-				loadErr
-			);
-			throw loadErr;
-		}
+		// We need to wait for each image to load to get its dimensions
+		await new Promise((resolve) => {
+			img.onload = () => {
+				totalHeight += img.height;
+				if (img.width > maxWidth) {
+					maxWidth = img.width;
+				}
+				resolve();
+			};
+			img.onerror = (err) => {
+				console.error(
+					'Failed to load image in combineCanvases:',
+					err,
+					dataUrl.substring(0, 50) + '...'
+				);
+				// Resolve even on error to prevent blocking, but data might be incomplete
+				resolve();
+			};
+		});
 	}
 
 	if (images.length === 0) {
-		console.warn('COMBINE: No valid images loaded for combination.');
+		console.warn('No valid images to combine.');
 		return '';
 	}
 
-	console.log(
-		`COMBINE: All images loaded. MaxWidth: ${maxWidth}, TotalHeight: ${totalHeight}. Creating canvas...`
-	);
+	// Create a new canvas to draw all combined segments
 	const canvas = createCanvas(maxWidth, totalHeight);
 	const ctx = canvas.getContext('2d');
 
+	// Draw each image onto the new canvas, stacking them vertically
 	let currentY = 0;
-	for (let i = 0; i < images.length; i++) {
-		const img = images[i];
-		try {
+	for (const img of images) {
+		if (img.width && img.height) {
+			// Check if image loaded successfully
 			ctx.drawImage(img, 0, currentY, maxWidth, img.height);
 			currentY += img.height;
-			console.log(
-				`COMBINE: Drew image ${i} at Y=${currentY - img.height}.`
-			);
-		} catch (drawErr) {
-			console.error(
-				`COMBINE ERROR: Failed to draw image (index ${i}) onto canvas:`,
-				drawErr
-			);
-			throw drawErr;
 		}
 	}
 
-	const resultDataUrl = canvas.toDataURL('image/png');
-	console.log('COMBINE: combineCanvases finished successfully.');
-	return resultDataUrl;
+	return canvas.toDataURL();
 }
 
 /**
- * Overlays multiple base64 image data URLs onto a single canvas of specified dimensions.
- * Useful for combining multiple player segments into a single transparent layer, or adding a new layer to a background.
- * @param {string[]} segmentDataUrls An array of base64 data URLs for images to overlay.
+ * Overlays an array of base64 image data URLs onto a single canvas.
+ * Images are scaled to fit the target dimensions and drawn on top of each other.
+ * @param {string[]} segmentDataUrls An array of base64 data URLs for the images to overlay.
  * @param {number} targetWidth The desired width of the resulting canvas.
  * @param {number} targetHeight The desired height of the resulting canvas.
  * @returns {Promise<string>} A promise that resolves with the base64 data URL of the overlaid canvas.
  */
 async function overlayCanvases(segmentDataUrls, targetWidth, targetHeight) {
-	console.log(`OVERLAY: Entering overlayCanvases function.`);
-	console.log(`OVERLAY: Received ${segmentDataUrls.length} data URLs.`); // NEW LOG
-	console.log(`OVERLAY: Target dimensions: ${targetWidth}x${targetHeight}.`); // NEW LOG
-	if (segmentDataUrls[0]) {
-		console.log(
-			`OVERLAY: First dataUrl length: ${segmentDataUrls[0].length}`
-		); // NEW LOG
-		console.log(
-			`OVERLAY: First dataUrl starts with: ${segmentDataUrls[0].substring(
-				0,
-				50
-			)}...`
-		); // NEW LOG
-	}
-	if (segmentDataUrls[1]) {
-		console.log(
-			`OVERLAY: Second dataUrl length: ${segmentDataUrls[1].length}`
-		); // NEW LOG
-		console.log(
-			`OVERLAY: Second dataUrl starts with: ${segmentDataUrls[1].substring(
-				0,
-				50
-			)}...`
-		); // NEW LOG
-	}
-
-	if (!segmentDataUrls || segmentDataUrls.length === 0) {
-		console.warn(
-			'OVERLAY: overlayCanvases received no segments to overlay or invalid inputs.'
-		);
-		return '';
-	}
-	if (targetWidth <= 0 || targetHeight <= 0) {
-		console.warn(
-			`OVERLAY: Invalid target dimensions: Width=${targetWidth}, Height=${targetHeight}.`
-		);
+	if (
+		!segmentDataUrls ||
+		segmentDataUrls.length === 0 ||
+		targetWidth <= 0 ||
+		targetHeight <= 0
+	) {
+		console.warn('overlayCanvases received invalid inputs.');
 		return '';
 	}
 
-	try {
-		console.log(
-			`OVERLAY: Creating canvas with dimensions ${targetWidth}x${targetHeight}.`
-		);
-		const canvas = createCanvas(targetWidth, targetHeight);
-		const ctx = canvas.getContext('2d');
+	const canvas = createCanvas(targetWidth, targetHeight);
+	const ctx = canvas.getContext('2d');
 
-		ctx.clearRect(0, 0, targetWidth, targetHeight);
-		console.log(`OVERLAY: Canvas created and cleared.`);
+	// Ensure background is transparent or white for proper overlay if desired
+	ctx.clearRect(0, 0, targetWidth, targetHeight); // Clear to transparent
 
-		for (let i = 0; i < segmentDataUrls.length; i++) {
-			const dataUrl = segmentDataUrls[i];
-			if (!dataUrl) {
+	// Load all images and draw them onto the canvas
+	for (const dataUrl of segmentDataUrls) {
+		if (!dataUrl) continue;
+		const img = new Image();
+		img.src = dataUrl;
+
+		await new Promise((resolve) => {
+			img.onload = () => {
+				// Draw each image scaled to fit the target dimensions
+				ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+				resolve();
+			};
+			img.onerror = (err) => {
 				console.warn(
-					`OVERLAY: Skipping null or empty dataUrl at index ${i}.`
+					'Failed to load image for overlay:',
+					err,
+					dataUrl.substring(0, 50) + '...'
 				);
-				continue;
-			}
-
-			try {
-				const img = new Image();
-				img.src = dataUrl;
-				console.log(
-					`OVERLAY: Loading image from dataUrl (index ${i})...`
-				);
-
-				await new Promise((resolve, reject) => {
-					img.onload = () => {
-						try {
-							ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-							console.log(
-								`OVERLAY: Successfully drew image ${i}.`
-							);
-							resolve();
-						} catch (drawErr) {
-							console.error(
-								`OVERLAY ERROR: Error drawing image ${i} onto canvas:`,
-								drawErr
-							);
-							reject(drawErr);
-						}
-					};
-					img.onerror = (err) => {
-						console.error(
-							`OVERLAY ERROR: Failed to load image from dataUrl (index ${i}):`,
-							err
-						);
-						reject(
-							new Error(
-								`Failed to load image for overlay at index ${i}`
-							)
-						);
-					};
-				});
-			} catch (loadOrDrawErr) {
-				console.error(
-					`OVERLAY ERROR: Caught error during image processing loop (index ${i}):`,
-					loadOrDrawErr
-				);
-				throw loadOrDrawErr;
-			}
-		}
-
-		const resultDataUrl = canvas.toDataURL('image/png');
-		console.log(
-			'OVERLAY: overlayCanvases finished successfully, returning data URL.'
-		);
-		return resultDataUrl;
-	} catch (overallErr) {
-		console.error(
-			'OVERLAY FATAL ERROR: An unhandled error occurred in overlayCanvases:',
-			overallErr
-		);
-		throw overallErr;
+				resolve();
+			};
+		});
 	}
+
+	return canvas.toDataURL();
+}
+
+/**
+ * Creates a new canvas of target dimensions and draws the bottom portion of a source image onto its bottom.
+ * The rest of the target canvas remains transparent.
+ * @param {string} fullPreviousDrawingDataUrl The base64 data URL of the complete previous drawing.
+ * @param {number} peekHeight The height of the peek portion from the bottom of the source image.
+ * @param {number} targetWidth The desired width of the resulting canvas.
+ * @param {number} targetHeight The desired height of the resulting canvas.
+ * @returns {Promise<string>} A promise that resolves with the base64 data URL of the new canvas with the peek.
+ */
+async function createCanvasWithBottomPeek(
+	fullPreviousDrawingDataUrl,
+	peekHeight,
+	targetWidth,
+	targetHeight
+) {
+	if (
+		!fullPreviousDrawingDataUrl ||
+		peekHeight <= 0 ||
+		targetWidth <= 0 ||
+		targetHeight <= 0
+	) {
+		console.warn('createCanvasWithBottomPeek received invalid inputs.');
+		// Return an empty canvas data URL for consistency
+		const emptyCanvas = createCanvas(targetWidth, targetHeight);
+		return emptyCanvas.toDataURL();
+	}
+
+	const img = new Image();
+	img.src = fullPreviousDrawingDataUrl;
+
+	return new Promise((resolve, reject) => {
+		img.onload = () => {
+			const sourceWidth = img.width;
+			const sourceHeight = img.height;
+
+			const canvas = createCanvas(targetWidth, targetHeight);
+			const ctx = canvas.getContext('2d');
+
+			// Clear the canvas to ensure transparency
+			ctx.clearRect(0, 0, targetWidth, targetHeight);
+
+			// Calculate the source Y-coordinate to start drawing from the bottom of the source image
+			const sourceY = Math.max(0, sourceHeight - peekHeight); // Ensure not negative
+
+			// Calculate the actual height to draw from the source
+			const actualPeekHeight = sourceHeight - sourceY;
+
+			// Calculate destination Y-coordinate on the target canvas (at the very bottom)
+			const destY = targetHeight - actualPeekHeight;
+
+			ctx.drawImage(
+				img,
+				0, // Source X
+				sourceY, // Source Y (start from bottom of source image)
+				sourceWidth, // Source Width
+				actualPeekHeight, // Source Height (portion to draw)
+				0, // Destination X
+				destY, // Destination Y (draw at bottom of target canvas)
+				targetWidth, // Destination Width (stretch to target width if necessary, though ideally sourceWidth == targetWidth)
+				actualPeekHeight // Destination Height
+			);
+
+			resolve(canvas.toDataURL());
+		};
+		img.onerror = (err) => {
+			console.error(
+				'Failed to load image for createCanvasWithBottomPeek:',
+				err,
+				fullPreviousDrawingDataUrl.substring(0, 50) + '...'
+			);
+			// Even if image fails, return a blank canvas to prevent blocking
+			const emptyCanvas = createCanvas(targetWidth, targetHeight);
+			resolve(emptyCanvas.toDataURL());
+		};
+	});
 }
 
 module.exports = {
 	combineCanvases,
 	overlayCanvases,
+	createCanvasWithBottomPeek,
 };
