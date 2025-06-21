@@ -39,10 +39,10 @@ app.post('/api/createGame', async (req, res) => {
 			playerCount: 0,
 			currentSegmentIndex: 0,
 			submittedPlayers: [], // Stores playerIds who submitted for the current segment
-			currentSegmentSubmissions: {}, // Stores individual player submissions for the current segment
+			currentSegmentSubmissions: {}, // Stores individual player submissions for the current segment (might be redundant with segmentHistory)
 			status: 'waiting',
 			createdAt: new Date(),
-			// --- NEW FIELDS FOR TWO-CANVAS GAMEPLAY ---
+			// --- NEW FIELDS FOR TWO-CANVAS GAMEPLAY & HISTORY ---
 			activeCanvasStates: [
 				// Initialize with two blank canvases
 				await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
@@ -50,6 +50,7 @@ app.post('/api/createGame', async (req, res) => {
 			],
 			canvasAssignments: {}, // Will be populated when the game starts, mapping playerId to canvas index (0 or 1)
 			finalArtworks: [], // To store the two final combined artworks at the end of the game
+			segmentHistory: {}, // NEW: Stores all completed segment data, including redLineY
 		};
 
 		const result = await db
