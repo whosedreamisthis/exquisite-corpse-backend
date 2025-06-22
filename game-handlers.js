@@ -76,29 +76,15 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				const canvasDataToSend =
 					gameRoom.activeCanvasStates[assignedCanvasIndex];
 
-				// Get the redLineY from the *other* player's submitted segment
-				// If it's the first segment (index 0), there's no previous line.
-				// Otherwise, get the line from the canvas *not* assigned to this client in the previous round.
 				let previousRedLineY = null;
 				if (gameRoom.currentSegmentIndex > 0) {
 					const otherPlayerCanvasIndex =
 						assignedCanvasIndex === 0 ? 1 : 0;
-					// Find the canvas data that was submitted by the other player for the previous round
-					// This implies that activeCanvasStates stores objects with { dataURL, redLineY }
-					// OR we need a separate field for previous red lines
-					// For simplicity, let's assume the gameRoom.activeCanvasStates[otherPlayerCanvasIndex] now contains { dataURL, redLineY }
-					// If it just stores dataURL, we need to modify the schema to store redLineY per submission.
-					// For now, let's pass null and work on that schema if needed.
-					// Let's assume for now that 'activeCanvasStates' is just the data URL, and we'll add
-					// a new field 'redLineYs' to store the line data for each segment.
-					// Reverting to the simpler approach for now, where redLineY is part of the submitted data object.
-
-					// Check if there's previous submission data for the 'other' player that includes redLineY
 					const previousSegmentSubmission = Object.values(
 						gameRoom.segmentHistory[
 							gameRoom.currentSegmentIndex - 1
 						] || {}
-					).find((sub) => sub.playerId !== client.playerId); // Find the other player's submission for the last round
+					).find((sub) => sub.playerId !== client.playerId);
 
 					if (
 						previousSegmentSubmission &&
@@ -122,7 +108,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							client.playerId
 						),
 						canvasData: canvasDataToSend,
-						previousRedLineY: previousRedLineY, // Pass the previous player's red line Y
+						previousRedLineY: previousRedLineY,
 					})
 				);
 			}
@@ -140,15 +126,8 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		}
 
 		const canvasIndex = gameRoom.canvasAssignments[ws.playerId];
-		// Store both canvasData and redLineY together for this segment submission
-		gameRoom.activeCanvasStates[canvasIndex] = data.canvasData; // This will continue to store the full canvas image
+		gameRoom.activeCanvasStates[canvasIndex] = data.canvasData;
 
-		// We need a place to store the redLineY for each segment,
-		// separate from the activeCanvasStates which store the full images.
-		// Let's create a new structure in the gameRoom called 'segmentHistory'
-		// This will store objects { playerId, dataURL, redLineY } for each segment.
-
-		// Initialize segment history for the current segment if it doesn't exist
 		if (!gameRoom.segmentHistory) {
 			gameRoom.segmentHistory = {};
 		}
@@ -156,11 +135,10 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			gameRoom.segmentHistory[gameRoom.currentSegmentIndex] = {};
 		}
 
-		// Store the current player's submission details including redLineY
 		gameRoom.segmentHistory[gameRoom.currentSegmentIndex][ws.playerId] = {
 			playerId: ws.playerId,
 			dataURL: data.canvasData,
-			redLineY: data.redLineY, // Store the red line Y for this submission
+			redLineY: data.redLineY,
 		};
 
 		const segmentIndex = gameRoom.currentSegmentIndex;
@@ -177,13 +155,8 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 			if (isFinalSegment) {
 				gameRoom.status = 'completed';
-				// For final artwork, combine all segments from history, in order
 				const allSegmentDataUrls = [];
 				for (let i = 0; i < TOTAL_SEGMENTS; i++) {
-					// Collect all dataURLs for segment 'i' (either player's, as they are combined)
-					// If segmentHistory contains dataURL directly:
-					// Example: allSegmentDataUrls.push(gameRoom.segmentHistory[i][gameRoom.players[0]].dataURL);
-					// For 2 players, alternate combining
 					allSegmentDataUrls.push(
 						gameRoom.segmentHistory[i][
 							gameRoom.players[i % MAX_PLAYERS]
@@ -193,23 +166,12 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				gameRoom.finalArtworks = [
 					await combineCanvases(allSegmentDataUrls),
 				];
-				// If you want to show TWO final artworks (one from each player's perspective if they only ever saw their chain)
-				// this logic would be more complex, needing to reconstruct each player's chain.
-				// For a single combined artwork, the above is fine. Let's stick to combining both player's inputs into ONE final image.
-				// To get two unique images, we'd need to track which segments belonged to which 'chain' for each player.
-				// Given the current 'activeCanvasStates' swap, it's a single collaborative chain.
-				// So, finalArtworks[0] should be the combined one. The second might be a duplicate or removed.
-				// Let's assume finalArtworks is an array of combined canvases for now.
-				// If the user wants two *different* combined artworks based on different starting players,
-				// we'd need to generate and store them.
-				// For now, let's make finalArtworks[1] null if only one combined artwork is desired.
-				gameRoom.finalArtworks[1] = null; // Or generate a second one if game logic supports it.
+				gameRoom.finalArtworks[1] = null;
 			} else {
 				gameRoom.currentSegmentIndex++;
 				gameRoom.submittedPlayers = [];
-				gameRoom.currentSegmentSubmissions = {}; // Clear this as well
+				gameRoom.currentSegmentSubmissions = {};
 
-				// Swap canvas assignments for the next round
 				Object.keys(gameRoom.canvasAssignments).forEach((playerId) => {
 					gameRoom.canvasAssignments[playerId] =
 						gameRoom.canvasAssignments[playerId] === 0 ? 1 : 0;
@@ -234,8 +196,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 					let previousRedLineYForNextPlayer = null;
 					if (gameRoom.currentSegmentIndex > 0) {
-						// If it's not the very first segment of the game
-						// Find the submission for the *current* segment from the *other* player in the previous round
 						const prevSegmentIndex =
 							gameRoom.currentSegmentIndex - 1;
 						const otherPlayerIdInPrevRound = Object.keys(
@@ -244,7 +204,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							(pId) =>
 								gameRoom.canvasAssignments[pId] !==
 								assignedCanvasIndex
-						); // Find the player who was assigned the *other* canvas in the *current* round (meaning they submitted to the one this client is now drawing from in previous round)
+						);
 
 						if (
 							gameRoom.segmentHistory[prevSegmentIndex] &&
@@ -282,7 +242,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 							canvasData: isCompleted ? null : canvasDataToSend,
 							finalArtwork1: gameRoom.finalArtworks?.[0],
 							finalArtwork2: gameRoom.finalArtworks?.[1],
-							previousRedLineY: previousRedLineYForNextPlayer, // Pass the other player's chosen red line Y
+							previousRedLineY: previousRedLineYForNextPlayer,
 						})
 					);
 				}
@@ -297,15 +257,48 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 }
 
 async function handleWebSocketClose(ws, wss, db) {
-	// In a real application, you'd want to manage player disconnection more robustly.
-	// For now, this placeholder handles basic cleanup.
 	const gameRoomsCollection = db.collection(COLLECTION_NAME);
 	if (ws.gameRoomId) {
 		const gameRoom = await gameRoomsCollection.findOne({
 			_id: new ObjectId(ws.gameRoomId),
 		});
 		if (gameRoom) {
-			// Remove disconnected player from the game room
+			// **BEGIN MODIFICATION**
+			// Check if the game is already completed
+			if (gameRoom.status === 'completed') {
+				// If the game is completed, and a player disconnects,
+				// we don't reset the game room unless both players have left.
+				gameRoom.players = gameRoom.players.filter(
+					(pId) => pId !== ws.playerId
+				);
+				gameRoom.playerObjects = gameRoom.playerObjects.filter(
+					(pObj) => pObj.id !== ws.playerId
+				);
+				gameRoom.playerCount = gameRoom.players.length;
+
+				if (gameRoom.playerCount === 0) {
+					// If no players left, delete the game room
+					await gameRoomsCollection.deleteOne({
+						_id: new ObjectId(ws.gameRoomId),
+					});
+					console.log(
+						`Game room ${ws.gameRoomId} deleted due to no players after game completion.`
+					);
+				} else {
+					// One player remains, but game is complete. No need to reset game state.
+					await gameRoomsCollection.updateOne(
+						{ _id: gameRoom._id },
+						{ $set: gameRoom }
+					);
+					console.log(
+						`Player ${ws.playerId} disconnected from completed game room ${ws.gameRoomId}. Remaining player still sees results.`
+					);
+				}
+				return; // Exit here, no further action needed for completed games
+			}
+			// **END MODIFICATION**
+
+			// Original logic for active/waiting games (only executed if game is NOT completed)
 			gameRoom.players = gameRoom.players.filter(
 				(pId) => pId !== ws.playerId
 			);
@@ -324,15 +317,15 @@ async function handleWebSocketClose(ws, wss, db) {
 				);
 			} else {
 				// If one player remains, update status and notify
-				gameRoom.status = 'waiting'; // Go back to waiting state
-				gameRoom.submittedPlayers = []; // Clear submissions
-				gameRoom.currentSegmentIndex = 0; // Reset segment
+				gameRoom.status = 'waiting';
+				gameRoom.submittedPlayers = [];
+				gameRoom.currentSegmentIndex = 0;
 				gameRoom.activeCanvasStates = [
 					await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
 					await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
 				];
 				gameRoom.canvasAssignments = {};
-				gameRoom.segmentHistory = {}; // Clear history
+				gameRoom.segmentHistory = {};
 				gameRoom.finalArtworks = [];
 
 				await gameRoomsCollection.updateOne(
@@ -340,7 +333,6 @@ async function handleWebSocketClose(ws, wss, db) {
 					{ $set: gameRoom }
 				);
 
-				// Notify remaining players
 				wss.clients.forEach(async (client) => {
 					if (
 						client.readyState === WebSocket.OPEN &&
@@ -352,7 +344,7 @@ async function handleWebSocketClose(ws, wss, db) {
 								message: `Player ${ws.playerId} disconnected. Waiting for 1 more player...`,
 								playerCount: gameRoom.playerCount,
 								status: gameRoom.status,
-								currentSegmentIndex: 0, // Reset for remaining player
+								currentSegmentIndex: 0,
 								canDraw: false,
 								isWaitingForOthers: false,
 								canvasData: await createBlankCanvas(
