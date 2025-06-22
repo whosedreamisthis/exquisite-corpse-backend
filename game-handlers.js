@@ -155,18 +155,11 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 			if (isFinalSegment) {
 				gameRoom.status = 'completed';
-				const allSegmentDataUrls = [];
-				for (let i = 0; i < TOTAL_SEGMENTS; i++) {
-					allSegmentDataUrls.push(
-						gameRoom.segmentHistory[i][
-							gameRoom.players[i % MAX_PLAYERS]
-						].dataURL
-					);
-				}
+				// Assign the two final artworks directly from activeCanvasStates
 				gameRoom.finalArtworks = [
-					await combineCanvases(allSegmentDataUrls),
+					gameRoom.activeCanvasStates[0], // This will be the first completed artwork
+					gameRoom.activeCanvasStates[1], // This will be the second completed artwork
 				];
-				gameRoom.finalArtworks[1] = null;
 			} else {
 				gameRoom.currentSegmentIndex++;
 				gameRoom.submittedPlayers = [];
