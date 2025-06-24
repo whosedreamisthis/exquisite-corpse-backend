@@ -17,7 +17,7 @@ function generateUniqueGameCode() {
 
 function getClientMessage(gameRoom, playerId) {
 	if (gameRoom.status === 'completed') {
-		return 'Game Over! The exquisite corpse is complete!';
+		return '';
 	}
 	if (gameRoom.status === 'waiting') {
 		return `Joined game ${gameRoom.gameCode}. Waiting for ${
