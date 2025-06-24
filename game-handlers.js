@@ -10,6 +10,11 @@ const CANVAS_HEIGHT = 600;
 
 const segments = ['Head', 'Torso', 'Legs', 'Feet'];
 
+// Helper function to generate a unique 4-character alphanumeric game code
+function generateUniqueGameCode() {
+	return Math.random().toString(36).substring(2, 6).toUpperCase();
+}
+
 function getClientMessage(gameRoom, playerId) {
 	if (gameRoom.status === 'completed') {
 		return 'Game Over! The exquisite corpse is complete!';
@@ -31,6 +36,72 @@ function getClientMessage(gameRoom, playerId) {
 async function handleWebSocketMessage(ws, wss, db, message) {
 	const data = JSON.parse(message);
 	const gameRoomsCollection = db.collection(COLLECTION_NAME);
+
+	// Handle 'createGame' message
+	if (data.type === 'createGame') {
+		let gameCode = generateUniqueGameCode();
+		let existingGame = await gameRoomsCollection.findOne({
+			gameCode: gameCode,
+		});
+
+		// Ensure the generated code is unique
+		while (existingGame) {
+			gameCode = generateUniqueGameCode();
+			existingGame = await gameRoomsCollection.findOne({
+				gameCode: gameCode,
+			});
+		}
+
+		const initialBlankCanvas = await createBlankCanvas(
+			CANVAS_WIDTH,
+			CANVAS_HEIGHT
+		);
+
+		const newGameRoom = {
+			gameCode: gameCode,
+			players: [ws.id], // The creator is the first player
+			playerObjects: [
+				{
+					id: ws.id,
+					name: `Player-${Math.random().toString(36).substr(2, 4)}`,
+				},
+			], // Assign a generic name
+			playerCount: 1,
+			status: 'waiting', // Creator waits for one more player
+			currentSegmentIndex: 0,
+			submittedPlayers: [],
+			activeCanvasStates: [initialBlankCanvas, initialBlankCanvas], // Two blank canvases for two players
+			canvasAssignments: { [ws.id]: 0 }, // Assign first player to first canvas
+			segmentHistory: {},
+			finalArtworks: [],
+			createdAt: new Date(),
+		};
+
+		const result = await gameRoomsCollection.insertOne(newGameRoom);
+		ws.gameRoomId = result.insertedId.toString();
+		ws.playerId = ws.id; // Store WebSocket ID as playerId
+
+		console.log(
+			`Game created with code: ${gameCode} by player: ${ws.playerId}`
+		);
+
+		ws.send(
+			JSON.stringify({
+				type: 'gameCreated',
+				message: `Game created! Share code: ${gameCode}. Waiting for 1 more player...`,
+				gameRoomId: ws.gameRoomId,
+				gameCode: gameCode, // Send game code back to creator
+				playerCount: newGameRoom.playerCount,
+				currentSegmentIndex: newGameRoom.currentSegmentIndex,
+				currentSegment: segments[newGameRoom.currentSegmentIndex],
+				canDraw: false, // Creator cannot draw yet, waiting for another player
+				isWaitingForOthers: true, // Creator is waiting
+				canvasData: initialBlankCanvas, // Send initial blank canvas data
+				previousRedLineY: null, // No previous red line for the first segment
+			})
+		);
+		return; // Exit after handling 'createGame'
+	}
 
 	if (data.type === 'joinGame') {
 		const gameRoom = await gameRoomsCollection.findOne({
@@ -55,6 +126,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			gameRoom.status === 'waiting'
 		) {
 			gameRoom.status = 'playing';
+			// Assign the second player to the second canvas
 			gameRoom.canvasAssignments = {
 				[gameRoom.players[0]]: 0,
 				[gameRoom.players[1]]: 1,
@@ -96,9 +168,10 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 				client.send(
 					JSON.stringify({
-						type: 'gameStateUpdate',
+						type: 'gameJoined', // Changed to gameJoined for initial join response
 						message: getClientMessage(gameRoom, client.playerId),
 						currentSegmentIndex: gameRoom.currentSegmentIndex,
+						currentSegment: segments[gameRoom.currentSegmentIndex], // Send current segment name
 						playerCount: gameRoom.playerCount,
 						status: gameRoom.status,
 						canDraw: !gameRoom.submittedPlayers.includes(
@@ -165,6 +238,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				gameRoom.submittedPlayers = [];
 				gameRoom.currentSegmentSubmissions = {};
 
+				// Swap canvas assignments for the next round
 				Object.keys(gameRoom.canvasAssignments).forEach((playerId) => {
 					gameRoom.canvasAssignments[playerId] =
 						gameRoom.canvasAssignments[playerId] === 0 ? 1 : 0;
@@ -214,12 +288,14 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 					client.send(
 						JSON.stringify({
-							type: 'gameStateUpdate',
+							type: 'gameUpdate', // Changed to gameUpdate for subsequent updates
 							message: getClientMessage(
 								gameRoom,
 								client.playerId
 							),
 							currentSegmentIndex: gameRoom.currentSegmentIndex,
+							currentSegment:
+								segments[gameRoom.currentSegmentIndex], // Send current segment name
 							playerCount: gameRoom.playerCount,
 							status: gameRoom.status,
 							canDraw:
@@ -246,6 +322,79 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			{ _id: gameRoom._id },
 			{ $set: gameRoom }
 		);
+	}
+
+	if (data.type === 'playAgain') {
+		const gameRoom = await gameRoomsCollection.findOne({
+			_id: new ObjectId(data.gameRoomId),
+		});
+
+		if (!gameRoom) return;
+
+		// Reset game state
+		gameRoom.status = 'waiting';
+		gameRoom.currentSegmentIndex = 0;
+		gameRoom.submittedPlayers = [];
+		gameRoom.activeCanvasStates = [
+			await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
+			await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT),
+		];
+		// Reassign canvases based on current players if any, or reset.
+		// For simplicity, let's reset assignments and let the join/gameCreated flow re-establish.
+		gameRoom.canvasAssignments = {};
+		if (gameRoom.players.length > 0) {
+			gameRoom.canvasAssignments[gameRoom.players[0]] = 0;
+			if (gameRoom.players.length > 1) {
+				gameRoom.canvasAssignments[gameRoom.players[1]] = 1;
+			}
+		}
+		gameRoom.segmentHistory = {};
+		gameRoom.finalArtworks = [];
+
+		await gameRoomsCollection.updateOne(
+			{ _id: gameRoom._id },
+			{ $set: gameRoom }
+		);
+
+		wss.clients.forEach(async (client) => {
+			if (
+				client.readyState === WebSocket.OPEN &&
+				client.gameRoomId === gameRoom._id.toString()
+			) {
+				const assignedCanvasIndex =
+					gameRoom.canvasAssignments[client.playerId];
+				const canvasDataToSend =
+					assignedCanvasIndex !== undefined
+						? gameRoom.activeCanvasStates[assignedCanvasIndex]
+						: await createBlankCanvas(CANVAS_WIDTH, CANVAS_HEIGHT); // Fallback
+
+				client.send(
+					JSON.stringify({
+						type: 'gameReset', // New message type for play again
+						message: getClientMessage(gameRoom, client.playerId),
+						gameRoomId: gameRoom._id.toString(),
+						gameCode: gameRoom.gameCode,
+						playerCount: gameRoom.playerCount,
+						currentSegmentIndex: gameRoom.currentSegmentIndex,
+						currentSegment: segments[gameRoom.currentSegmentIndex],
+						canDraw:
+							gameRoom.playerCount === MAX_PLAYERS &&
+							!gameRoom.submittedPlayers.includes(
+								client.playerId
+							),
+						isWaitingForOthers:
+							gameRoom.playerCount < MAX_PLAYERS ||
+							gameRoom.submittedPlayers.includes(client.playerId),
+						canvasData: canvasDataToSend,
+						previousRedLineY: null,
+						isGameOver: false,
+						finalArtwork1: null,
+						finalArtwork2: null,
+					})
+				);
+			}
+		});
+		console.log(`Game room ${gameRoom.gameCode} reset for play again.`);
 	}
 }
 
