@@ -5,8 +5,8 @@ const { combineCanvases, createBlankCanvas } = require('./canvas-utils');
 const COLLECTION_NAME = 'gameRooms';
 const TOTAL_SEGMENTS = 4;
 const MAX_PLAYERS = 2;
-const CANVAS_WIDTH = 800;
-const CANVAS_HEIGHT = 600;
+const CANVAS_WIDTH = 1080; // Updated to 1080
+const CANVAS_HEIGHT = 1920; // Updated to 1920
 
 const segments = ['Head', 'Torso', 'Legs', 'Feet'];
 

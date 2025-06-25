@@ -16,8 +16,8 @@ const { createBlankCanvas } = require('./canvas-utils'); // Import new function
 const PORT = process.env.PORT || 8080;
 
 // Define canvas dimensions (should be consistent across frontend and backend)
-const CANVAS_WIDTH = 800;
-const CANVAS_HEIGHT = 600;
+const CANVAS_WIDTH = 1080; // Updated to 1080
+const CANVAS_HEIGHT = 1920; // Updated to 1920
 
 const app = express();
 app.use(express.json());
