@@ -22,7 +22,7 @@ function getClientMessage(gameRoom, playerId) {
 	if (gameRoom.status === 'waiting') {
 		return `Joined game ${gameRoom.gameCode}. Waiting for ${
 			MAX_PLAYERS - gameRoom.playerCount
-		} more player(s)...`;
+		} more player...`;
 	}
 
 	const hasSubmitted = gameRoom.submittedPlayers.includes(playerId);
