@@ -51,6 +51,7 @@ app.post('/api/createGame', async (req, res) => {
 			canvasAssignments: {}, // Will be populated when the game starts, mapping playerId to canvas index (0 or 1)
 			finalArtworks: [], // To store the two final combined artworks at the end of the game
 			segmentHistory: {}, // NEW: Stores all completed segment data, including redLineY
+			disconnectionTimers: {}, // Initialize disconnectionTimers here
 		};
 
 		const result = await db

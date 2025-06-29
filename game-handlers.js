@@ -67,7 +67,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				{
 					id: ws.id,
 					name: `Player-${Math.random().toString(36).substr(2, 4)}`,
-					isDisconnected: false, // Track disconnection status
+					isConnected: true, // New player is connected
 					reconnectAttempts: 0, // Track reconnect attempts
 				},
 			],
@@ -80,6 +80,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			segmentHistory: {},
 			finalArtworks: [],
 			createdAt: new Date(),
+			disconnectionTimers: {}, // Initialize disconnectionTimers here
 		};
 
 		const result = await gameRoomsCollection.insertOne(newGameRoom);
@@ -129,7 +130,9 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			(p) => p.id === data.playerId
 		);
 
-		if (!playerToReconnect || !playerToReconnect.isDisconnected) {
+		// Check if player is valid and was marked as disconnected
+		if (!playerToReconnect || playerToReconnect.isConnected) {
+			// Changed from isDisconnected to isConnected
 			ws.send(
 				JSON.stringify({
 					type: 'reconnectFailed',
@@ -139,6 +142,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			return;
 		}
 
+		// Check reconnect attempts
 		if (playerToReconnect.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
 			ws.send(
 				JSON.stringify({
@@ -154,7 +158,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		// Re-associate the WebSocket with the existing player's session
 		ws.gameRoomId = gameRoom._id.toString();
 		ws.playerId = playerToReconnect.id;
-		playerToReconnect.isDisconnected = false; // Player is now reconnected
+		playerToReconnect.isConnected = true; // Player is now reconnected
 		playerToReconnect.reconnectAttempts = 0; // Reset attempts on successful reconnect
 
 		// Clear any pending disconnection timers for this player/room
@@ -164,7 +168,15 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		) {
 			clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
 			delete gameRoom.disconnectionTimers[ws.playerId];
+			console.log(
+				`Cleared disconnection timer for player ${ws.playerId}`
+			);
 		}
+
+		// Update playerCount based on actual connected players
+		gameRoom.playerCount = gameRoom.playerObjects.filter(
+			(p) => p.isConnected
+		).length;
 
 		await gameRoomsCollection.updateOne(
 			{ _id: gameRoom._id },
@@ -205,6 +217,8 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				),
 				canvasData: canvasDataToSend,
 				previousRedLineY: previousRedLineY,
+				gameRoomId: gameRoom._id.toString(), // Added for frontend to persist
+				playerId: ws.playerId, // Added for frontend to persist
 			})
 		);
 
@@ -223,6 +237,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 						} has reconnected!`,
 						playerCount: gameRoom.playerCount, // Update player count for other clients
 						status: gameRoom.status, // Update status for other clients
+						gameCode: gameRoom.gameCode, // Added for consistency
 					})
 				);
 			}
@@ -241,104 +256,132 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		// Check if the player is already in the room but was disconnected
 		let playerExistsInRoom = gameRoom.playerObjects.find(
-			(p) => p.id === ws.id
+			(p) => p.id === ws.id || p.name === data.playerName // Also check by name if ID isn't directly matching on client side
 		);
 
-		if (playerExistsInRoom && playerExistsInRoom.isDisconnected) {
-			// If the player exists and was disconnected, treat this as a reconnect attempt
-			// This case might be less common if the client explicitly sends 'reconnectGame'
-			// but it's good to handle for robustness.
-			ws.gameRoomId = gameRoom._id.toString();
-			ws.playerId = ws.id;
-			playerExistsInRoom.isDisconnected = false;
-			playerExistsInRoom.reconnectAttempts = 0;
-
-			if (
-				gameRoom.disconnectionTimers &&
-				gameRoom.disconnectionTimers[ws.playerId]
-			) {
-				clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
-				delete gameRoom.disconnectionTimers[ws.playerId];
-			}
-
-			await gameRoomsCollection.updateOne(
-				{ _id: gameRoom._id },
-				{ $set: gameRoom }
-			);
-
-			// Send reconnected message
-			const assignedCanvasIndex = gameRoom.canvasAssignments[ws.playerId];
-			const canvasDataToSend =
-				gameRoom.activeCanvasStates[assignedCanvasIndex];
-
-			let previousRedLineY = null;
-			if (gameRoom.currentSegmentIndex > 0) {
-				const otherPlayerCanvasIndex =
-					assignedCanvasIndex === 0 ? 1 : 0;
-				const previousSegmentSubmission = Object.values(
-					gameRoom.segmentHistory[gameRoom.currentSegmentIndex - 1] ||
-						{}
-				).find((sub) => sub.playerId !== ws.playerId);
+		if (playerExistsInRoom) {
+			if (!playerExistsInRoom.isConnected) {
+				// Check if the existing player is disconnected
+				// If the player exists and was disconnected, treat this as a reconnect attempt
+				ws.gameRoomId = gameRoom._id.toString();
+				ws.playerId = playerExistsInRoom.id; // Use the existing player's ID
+				playerExistsInRoom.isConnected = true; // Mark as connected
+				playerExistsInRoom.reconnectAttempts = 0; // Reset attempts
 
 				if (
-					previousSegmentSubmission &&
-					previousSegmentSubmission.redLineY !== undefined
+					gameRoom.disconnectionTimers &&
+					gameRoom.disconnectionTimers[ws.playerId]
 				) {
-					previousRedLineY = previousSegmentSubmission.redLineY;
-				}
-			}
-
-			ws.send(
-				JSON.stringify({
-					type: 'reconnected', // Reconnected on join
-					message: `Reconnected to game ${gameRoom.gameCode}!`,
-					currentSegmentIndex: gameRoom.currentSegmentIndex,
-					currentSegment: segments[gameRoom.currentSegmentIndex],
-					playerCount: gameRoom.playerCount,
-					status: gameRoom.status,
-					canDraw: !gameRoom.submittedPlayers.includes(ws.playerId),
-					isWaitingForOthers: gameRoom.submittedPlayers.includes(
-						ws.playerId
-					),
-					canvasData: canvasDataToSend,
-					previousRedLineY: previousRedLineY,
-				})
-			);
-
-			wss.clients.forEach((client) => {
-				if (
-					client.readyState === WebSocket.OPEN &&
-					client.gameRoomId === ws.gameRoomId &&
-					client.playerId !== ws.playerId
-				) {
-					client.send(
-						JSON.stringify({
-							type: 'playerReconnected',
-							message: `Player ${
-								playerExistsInRoom.name || playerExistsInRoom.id
-							} has reconnected!`,
-							playerCount: gameRoom.playerCount,
-							status: gameRoom.status,
-						})
+					clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
+					delete gameRoom.disconnectionTimers[ws.playerId];
+					console.log(
+						`Cleared disconnection timer for player ${ws.playerId} on join/reconnect`
 					);
 				}
-			});
-			console.log(
-				`Player ${ws.playerId} re-joined as a reconnected player to game ${gameRoom.gameCode}.`
-			);
-			return;
+
+				// Update playerCount based on actual connected players
+				gameRoom.playerCount = gameRoom.playerObjects.filter(
+					(p) => p.isConnected
+				).length;
+
+				await gameRoomsCollection.updateOne(
+					{ _id: gameRoom._id },
+					{ $set: gameRoom }
+				);
+
+				// Send reconnected message
+				const assignedCanvasIndex =
+					gameRoom.canvasAssignments[ws.playerId];
+				const canvasDataToSend =
+					gameRoom.activeCanvasStates[assignedCanvasIndex];
+
+				let previousRedLineY = null;
+				if (gameRoom.currentSegmentIndex > 0) {
+					const otherPlayerCanvasIndex =
+						assignedCanvasIndex === 0 ? 1 : 0;
+					const previousSegmentSubmission = Object.values(
+						gameRoom.segmentHistory[
+							gameRoom.currentSegmentIndex - 1
+						] || {}
+					).find((sub) => sub.playerId !== ws.playerId);
+
+					if (
+						previousSegmentSubmission &&
+						previousSegmentSubmission.redLineY !== undefined
+					) {
+						previousRedLineY = previousSegmentSubmission.redLineY;
+					}
+				}
+
+				ws.send(
+					JSON.stringify({
+						type: 'reconnected', // Reconnected on join
+						message: `Reconnected to game ${gameRoom.gameCode}!`,
+						currentSegmentIndex: gameRoom.currentSegmentIndex,
+						currentSegment: segments[gameRoom.currentSegmentIndex],
+						playerCount: gameRoom.playerCount,
+						status: gameRoom.status,
+						canDraw: !gameRoom.submittedPlayers.includes(
+							ws.playerId
+						),
+						isWaitingForOthers: gameRoom.submittedPlayers.includes(
+							ws.playerId
+						),
+						canvasData: canvasDataToSend,
+						previousRedLineY: previousRedLineY,
+						gameRoomId: gameRoom._id.toString(), // Added for frontend to persist
+						playerId: ws.playerId, // Added for frontend to persist
+					})
+				);
+
+				wss.clients.forEach((client) => {
+					if (
+						client.readyState === WebSocket.OPEN &&
+						client.gameRoomId === ws.gameRoomId &&
+						client.playerId !== ws.playerId
+					) {
+						client.send(
+							JSON.stringify({
+								type: 'playerReconnected',
+								message: `Player ${
+									playerExistsInRoom.name ||
+									playerExistsInRoom.id
+								} has reconnected!`,
+								playerCount: gameRoom.playerCount,
+								status: gameRoom.status,
+								gameCode: gameRoom.gameCode, // Added for consistency
+							})
+						);
+					}
+				});
+				console.log(
+					`Player ${ws.playerId} re-joined as a reconnected player to game ${gameRoom.gameCode}.`
+				);
+				return;
+			} else {
+				// Player exists and is already connected, or name is in use
+				ws.send(
+					JSON.stringify({
+						type: 'error',
+						message:
+							'Player name already in use or already joined.',
+					})
+				);
+				return;
+			}
 		}
 
 		// Original join game logic for new players
 		ws.gameRoomId = gameRoom._id.toString();
-		ws.playerId = ws.id;
+		ws.playerId = ws.id; // Assign a new ID for a truly new player
 
+		// Only add if not already present (should be handled by the above check, but good for safety)
 		if (!gameRoom.players.includes(ws.playerId)) {
 			gameRoom.players.push(ws.playerId);
 			gameRoom.playerObjects.push({
 				id: ws.playerId,
 				name: data.playerName,
-				isDisconnected: false, // New player is not disconnected
+				isConnected: true, // New player is connected
 				reconnectAttempts: 0,
 			});
 			gameRoom.playerCount = gameRoom.players.length;
@@ -569,7 +612,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		gameRoom.finalArtworks = [];
 		// Reset player disconnection states
 		gameRoom.playerObjects.forEach((p) => {
-			p.isDisconnected = false;
+			p.isConnected = true; // All players are considered connected at start of new game
 			p.reconnectAttempts = 0;
 		});
 
@@ -635,11 +678,18 @@ async function handleWebSocketClose(ws, wss, db) {
 				(p) => p.id === ws.playerId
 			);
 
+			if (!disconnectedPlayer) {
+				console.log(
+					`Disconnected player ${ws.playerId} not found in game room ${ws.gameRoomId}.`
+				);
+				return;
+			}
+
 			// If the game is completed, apply the specific completed game disconnection logic
 			if (gameRoom.status === 'completed') {
 				if (disconnectedPlayer) {
 					// Just mark as disconnected, don't remove immediately
-					disconnectedPlayer.isDisconnected = true;
+					disconnectedPlayer.isConnected = false; // Mark as not connected
 					// Increment reconnect attempts, even for completed games
 					disconnectedPlayer.reconnectAttempts =
 						(disconnectedPlayer.reconnectAttempts || 0) + 1;
@@ -647,7 +697,7 @@ async function handleWebSocketClose(ws, wss, db) {
 
 				// If all players are now disconnected from a completed game, delete the room
 				const allPlayersDisconnected = gameRoom.playerObjects.every(
-					(p) => p.isDisconnected
+					(p) => !p.isConnected // Check if all are NOT connected
 				);
 				if (allPlayersDisconnected) {
 					await gameRoomsCollection.deleteOne({
@@ -670,15 +720,18 @@ async function handleWebSocketClose(ws, wss, db) {
 			}
 
 			// --- Logic for 'waiting' or 'playing' games ---
-			if (disconnectedPlayer) {
-				disconnectedPlayer.isDisconnected = true;
-				disconnectedPlayer.reconnectAttempts =
-					(disconnectedPlayer.reconnectAttempts || 0) + 1;
-			}
+			disconnectedPlayer.isConnected = false; // Player is now disconnected
+			disconnectedPlayer.reconnectAttempts =
+				(disconnectedPlayer.reconnectAttempts || 0) + 1;
 
 			// Store the timer reference in the game room object
 			if (!gameRoom.disconnectionTimers) {
 				gameRoom.disconnectionTimers = {};
+			}
+
+			// Clear any pre-existing timer for this player to avoid duplicates
+			if (gameRoom.disconnectionTimers[ws.playerId]) {
+				clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
 			}
 
 			// Set a timeout to remove the player if they don't reconnect within the grace period
@@ -691,7 +744,7 @@ async function handleWebSocketClose(ws, wss, db) {
 
 				const playerStillDisconnected =
 					updatedGameRoom.playerObjects.find(
-						(p) => p.id === ws.playerId && p.isDisconnected
+						(p) => p.id === ws.playerId && !p.isConnected // Check if still NOT connected
 					);
 
 				if (
@@ -703,6 +756,9 @@ async function handleWebSocketClose(ws, wss, db) {
 						`Player ${ws.playerId} failed to reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts. Removing.`
 					);
 
+					// Also remove from canvasAssignments if they were assigned a canvas
+					delete updatedGameRoom.canvasAssignments[ws.playerId];
+
 					// Remove the player from the game room
 					updatedGameRoom.players = updatedGameRoom.players.filter(
 						(pId) => pId !== ws.playerId
@@ -712,7 +768,7 @@ async function handleWebSocketClose(ws, wss, db) {
 							(pObj) => pObj.id !== ws.playerId
 						);
 					updatedGameRoom.playerCount =
-						updatedGameRoom.players.length;
+						updatedGameRoom.players.length; // Recalculate playerCount
 
 					if (updatedGameRoom.playerCount === 0) {
 						// If no players left, delete the game room
@@ -737,9 +793,19 @@ async function handleWebSocketClose(ws, wss, db) {
 								CANVAS_HEIGHT
 							),
 						];
-						updatedGameRoom.canvasAssignments = {};
+						updatedGameRoom.canvasAssignments = {}; // Reset assignments
+						if (updatedGameRoom.players.length > 0) {
+							// Reassign for remaining player
+							updatedGameRoom.canvasAssignments[
+								updatedGameRoom.players[0]
+							] = 0;
+						}
 						updatedGameRoom.segmentHistory = {};
 						updatedGameRoom.finalArtworks = [];
+						// Ensure the remaining player is marked as connected
+						updatedGameRoom.playerObjects.forEach(
+							(p) => (p.isConnected = true)
+						);
 
 						await gameRoomsCollection.updateOne(
 							{ _id: updatedGameRoom._id },
@@ -751,6 +817,20 @@ async function handleWebSocketClose(ws, wss, db) {
 								client.readyState === WebSocket.OPEN &&
 								client.gameRoomId === ws.gameRoomId
 							) {
+								const assignedCanvasIndex =
+									updatedGameRoom.canvasAssignments[
+										client.playerId
+									];
+								const canvasDataToSend =
+									assignedCanvasIndex !== undefined
+										? updatedGameRoom.activeCanvasStates[
+												assignedCanvasIndex
+										  ]
+										: await createBlankCanvas(
+												CANVAS_WIDTH,
+												CANVAS_HEIGHT
+										  );
+
 								client.send(
 									JSON.stringify({
 										type: 'playerPermanentlyDisconnected', // New message type
@@ -759,13 +839,11 @@ async function handleWebSocketClose(ws, wss, db) {
 											updatedGameRoom.playerCount,
 										status: updatedGameRoom.status,
 										currentSegmentIndex: 0,
-										canDraw: false,
-										isWaitingForOthers: false,
-										canvasData: await createBlankCanvas(
-											CANVAS_WIDTH,
-											CANVAS_HEIGHT
-										),
+										canDraw: false, // Remaining player cannot draw until another joins
+										isWaitingForOthers: true, // Always waiting for another player
+										canvasData: canvasDataToSend,
 										previousRedLineY: null,
+										gameCode: updatedGameRoom.gameCode, // Added for consistency
 									})
 								);
 							}
@@ -778,10 +856,15 @@ async function handleWebSocketClose(ws, wss, db) {
 					// Player reconnected within the grace period or hadn't reached max attempts.
 					// No action needed here, the 'reconnectGame' handler took care of it.
 					console.log(
-						`Player ${ws.playerId} disconnected but either reconnected or has remaining attempts.`
+						`Player ${ws.playerId} disconnected but either reconnected or has remaining attempts. No cleanup needed by timer.`
 					);
 				}
 				delete gameRoom.disconnectionTimers[ws.playerId]; // Clean up the timer
+				// Important: Update gameRoom in DB again to reflect timer removal
+				await gameRoomsCollection.updateOne(
+					{ _id: gameRoom._id },
+					{ $unset: { [`disconnectionTimers.${ws.playerId}`]: '' } } // Unset specific timer
+				);
 			}, RECONNECT_GRACE_PERIOD_MS);
 
 			await gameRoomsCollection.updateOne(
