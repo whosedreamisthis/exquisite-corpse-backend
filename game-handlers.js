@@ -700,12 +700,12 @@ async function handleWebSocketClose(ws, wss, db) {
 					(p) => !p.isConnected // Check if all are NOT connected
 				);
 				if (allPlayersDisconnected) {
-					await gameRoomsCollection.deleteOne({
-						_id: new ObjectId(ws.gameRoomId),
-					});
-					console.log(
-						`Game room ${ws.gameRoomId} deleted as all players disconnected from a completed game.`
-					);
+					// await gameRoomsCollection.deleteOne({
+					// 	_id: new ObjectId(ws.gameRoomId),
+					// });
+					// console.log(
+					// 	`Game room ${ws.gameRoomId} deleted as all players disconnected from a completed game.`
+					// );
 				} else {
 					// Update the game room to reflect the disconnected player's status
 					await gameRoomsCollection.updateOne(
