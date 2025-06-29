@@ -620,6 +620,9 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 	}
 }
 
+// game-handlers.js
+// ... (previous code)
+
 async function handleWebSocketClose(ws, wss, db) {
 	const gameRoomsCollection = db.collection(COLLECTION_NAME);
 	if (ws.gameRoomId) {
@@ -809,6 +812,7 @@ async function handleWebSocketClose(ws, wss, db) {
 							})`,
 							playerCount: gameRoom.playerCount,
 							status: gameRoom.status,
+							gameCode: gameRoom.gameCode, // <--- ADD THIS LINE
 						})
 					);
 				}
