@@ -13,6 +13,10 @@ const MAX_RECONNECT_ATTEMPTS = 5; // Max 5 reconnect attempts
 
 const segments = ['Head', 'Torso', 'Legs', 'Feet'];
 
+// In-memory storage for disconnection timers
+// This MUST NOT be part of the MongoDB document because it contains circular references.
+const activeDisconnectionTimers = new Map(); // Stores timers like { gameRoomId: { playerId: timeoutId } }
+
 // Helper function to generate a unique 4-character alphanumeric game code
 function generateUniqueGameCode() {
 	return Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -80,7 +84,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			segmentHistory: {},
 			finalArtworks: [],
 			createdAt: new Date(),
-			disconnectionTimers: {}, // Initialize disconnectionTimers here
+			// disconnectionTimers: {}, // REMOVED: This should be managed in-memory, not persisted
 		};
 
 		const result = await gameRoomsCollection.insertOne(newGameRoom);
@@ -132,7 +136,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		// Check if player is valid and was marked as disconnected
 		if (!playerToReconnect || playerToReconnect.isConnected) {
-			// Changed from isDisconnected to isConnected
 			ws.send(
 				JSON.stringify({
 					type: 'reconnectFailed',
@@ -150,8 +153,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					message: 'Maximum reconnect attempts reached.',
 				})
 			);
-			// Optionally, if MAX_RECONNECT_ATTEMPTS is reached, trigger the full disconnection logic here.
-			// For now, we'll let the handleWebSocketClose timer do it.
 			return;
 		}
 
@@ -161,16 +162,17 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 		playerToReconnect.isConnected = true; // Player is now reconnected
 		playerToReconnect.reconnectAttempts = 0; // Reset attempts on successful reconnect
 
-		// Clear any pending disconnection timers for this player/room
-		if (
-			gameRoom.disconnectionTimers &&
-			gameRoom.disconnectionTimers[ws.playerId]
-		) {
-			clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
-			delete gameRoom.disconnectionTimers[ws.playerId];
+		// Clear any pending disconnection timers for this player/room from in-memory map
+		const roomTimers = activeDisconnectionTimers.get(ws.gameRoomId);
+		if (roomTimers && roomTimers[ws.playerId]) {
+			clearTimeout(roomTimers[ws.playerId]);
+			delete roomTimers[ws.playerId];
 			console.log(
 				`Cleared disconnection timer for player ${ws.playerId}`
 			);
+			if (Object.keys(roomTimers).length === 0) {
+				activeDisconnectionTimers.delete(ws.gameRoomId);
+			}
 		}
 
 		// Update playerCount based on actual connected players
@@ -178,9 +180,16 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			(p) => p.isConnected
 		).length;
 
+		// Only update specific properties, not the whole gameRoom object, to avoid saving non-persistent data
 		await gameRoomsCollection.updateOne(
 			{ _id: gameRoom._id },
-			{ $set: gameRoom }
+			{
+				$set: {
+					playerObjects: gameRoom.playerObjects,
+					playerCount: gameRoom.playerCount,
+					// Add other top-level properties that might change here if needed
+				},
+			}
 		);
 
 		// Send updated game state to the reconnected player
@@ -261,22 +270,22 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 
 		if (playerExistsInRoom) {
 			if (!playerExistsInRoom.isConnected) {
-				// Check if the existing player is disconnected
 				// If the player exists and was disconnected, treat this as a reconnect attempt
 				ws.gameRoomId = gameRoom._id.toString();
 				ws.playerId = playerExistsInRoom.id; // Use the existing player's ID
 				playerExistsInRoom.isConnected = true; // Mark as connected
 				playerExistsInRoom.reconnectAttempts = 0; // Reset attempts
 
-				if (
-					gameRoom.disconnectionTimers &&
-					gameRoom.disconnectionTimers[ws.playerId]
-				) {
-					clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
-					delete gameRoom.disconnectionTimers[ws.playerId];
+				const roomTimers = activeDisconnectionTimers.get(ws.gameRoomId);
+				if (roomTimers && roomTimers[ws.playerId]) {
+					clearTimeout(roomTimers[ws.playerId]);
+					delete roomTimers[ws.playerId];
 					console.log(
 						`Cleared disconnection timer for player ${ws.playerId} on join/reconnect`
 					);
+					if (Object.keys(roomTimers).length === 0) {
+						activeDisconnectionTimers.delete(ws.gameRoomId);
+					}
 				}
 
 				// Update playerCount based on actual connected players
@@ -284,9 +293,15 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 					(p) => p.isConnected
 				).length;
 
+				// Only update specific properties
 				await gameRoomsCollection.updateOne(
 					{ _id: gameRoom._id },
-					{ $set: gameRoom }
+					{
+						$set: {
+							playerObjects: gameRoom.playerObjects,
+							playerCount: gameRoom.playerCount,
+						},
+					}
 				);
 
 				// Send reconnected message
@@ -398,9 +413,18 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			};
 		}
 
+		// Only update specific properties
 		await gameRoomsCollection.updateOne(
 			{ _id: gameRoom._id },
-			{ $set: gameRoom }
+			{
+				$set: {
+					players: gameRoom.players,
+					playerObjects: gameRoom.playerObjects,
+					playerCount: gameRoom.playerCount,
+					status: gameRoom.status,
+					canvasAssignments: gameRoom.canvasAssignments,
+				},
+			}
 		);
 
 		wss.clients.forEach(async (client) => {
@@ -500,7 +524,7 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			} else {
 				gameRoom.currentSegmentIndex++;
 				gameRoom.submittedPlayers = [];
-				gameRoom.currentSegmentSubmissions = {};
+				// gameRoom.currentSegmentSubmissions = {}; // This property is not used and can be removed if not defining in schema
 
 				Object.keys(gameRoom.canvasAssignments).forEach((playerId) => {
 					gameRoom.canvasAssignments[playerId] =
@@ -508,9 +532,20 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 				});
 			}
 
+			// Only update specific properties
 			await gameRoomsCollection.updateOne(
 				{ _id: gameRoom._id },
-				{ $set: gameRoom }
+				{
+					$set: {
+						status: gameRoom.status,
+						finalArtworks: gameRoom.finalArtworks,
+						currentSegmentIndex: gameRoom.currentSegmentIndex,
+						submittedPlayers: gameRoom.submittedPlayers,
+						activeCanvasStates: gameRoom.activeCanvasStates,
+						canvasAssignments: gameRoom.canvasAssignments,
+						segmentHistory: gameRoom.segmentHistory, // Ensure segmentHistory is updated
+					},
+				}
 			);
 
 			wss.clients.forEach((client) => {
@@ -581,9 +616,18 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			});
 		}
 
+		// This update is now redundant if the above block handles all scenarios where submittedPlayers.length === MAX_PLAYERS
+		// If there are partial updates here, they should also only update specific fields.
+		// For safety, let's ensure this update also only sets allowed fields.
 		await gameRoomsCollection.updateOne(
 			{ _id: gameRoom._id },
-			{ $set: gameRoom }
+			{
+				$set: {
+					submittedPlayers: gameRoom.submittedPlayers,
+					activeCanvasStates: gameRoom.activeCanvasStates,
+					segmentHistory: gameRoom.segmentHistory, // Make sure history is saved
+				},
+			}
 		);
 	}
 
@@ -616,9 +660,21 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 			p.reconnectAttempts = 0;
 		});
 
+		// Only update specific properties
 		await gameRoomsCollection.updateOne(
 			{ _id: gameRoom._id },
-			{ $set: gameRoom }
+			{
+				$set: {
+					status: gameRoom.status,
+					currentSegmentIndex: gameRoom.currentSegmentIndex,
+					submittedPlayers: gameRoom.submittedPlayers,
+					activeCanvasStates: gameRoom.activeCanvasStates,
+					canvasAssignments: gameRoom.canvasAssignments,
+					segmentHistory: gameRoom.segmentHistory,
+					finalArtworks: gameRoom.finalArtworks,
+					playerObjects: gameRoom.playerObjects, // Update playerObjects with reset reconnectAttempts/isConnected
+				},
+			}
 		);
 
 		wss.clients.forEach(async (client) => {
@@ -663,9 +719,6 @@ async function handleWebSocketMessage(ws, wss, db, message) {
 	}
 }
 
-// game-handlers.js
-// ... (previous code)
-
 async function handleWebSocketClose(ws, wss, db) {
 	const gameRoomsCollection = db.collection(COLLECTION_NAME);
 	if (ws.gameRoomId) {
@@ -688,9 +741,7 @@ async function handleWebSocketClose(ws, wss, db) {
 			// If the game is completed, apply the specific completed game disconnection logic
 			if (gameRoom.status === 'completed') {
 				if (disconnectedPlayer) {
-					// Just mark as disconnected, don't remove immediately
 					disconnectedPlayer.isConnected = false; // Mark as not connected
-					// Increment reconnect attempts, even for completed games
 					disconnectedPlayer.reconnectAttempts =
 						(disconnectedPlayer.reconnectAttempts || 0) + 1;
 				}
@@ -724,21 +775,30 @@ async function handleWebSocketClose(ws, wss, db) {
 			disconnectedPlayer.reconnectAttempts =
 				(disconnectedPlayer.reconnectAttempts || 0) + 1;
 
-			// Store the timer reference in the game room object
-			if (!gameRoom.disconnectionTimers) {
-				gameRoom.disconnectionTimers = {};
+			// Store the timer reference in the in-memory map
+			if (!activeDisconnectionTimers.has(ws.gameRoomId)) {
+				activeDisconnectionTimers.set(ws.gameRoomId, {});
 			}
+			const roomTimers = activeDisconnectionTimers.get(ws.gameRoomId);
 
 			// Clear any pre-existing timer for this player to avoid duplicates
-			if (gameRoom.disconnectionTimers[ws.playerId]) {
-				clearTimeout(gameRoom.disconnectionTimers[ws.playerId]);
+			if (roomTimers[ws.playerId]) {
+				clearTimeout(roomTimers[ws.playerId]);
 			}
 
 			// Set a timeout to remove the player if they don't reconnect within the grace period
-			gameRoom.disconnectionTimers[ws.playerId] = setTimeout(async () => {
+			roomTimers[ws.playerId] = setTimeout(async () => {
 				const updatedGameRoom = await gameRoomsCollection.findOne({
 					_id: new ObjectId(ws.gameRoomId),
 				});
+
+				// Clean up the timer from the in-memory map regardless of reconnection status
+				if (roomTimers && roomTimers[ws.playerId]) {
+					delete roomTimers[ws.playerId];
+				}
+				if (Object.keys(roomTimers).length === 0) {
+					activeDisconnectionTimers.delete(ws.gameRoomId);
+				}
 
 				if (!updatedGameRoom) return; // Room might have been deleted by another player's disconnection
 
@@ -822,7 +882,7 @@ async function handleWebSocketClose(ws, wss, db) {
 										client.playerId
 									];
 								const canvasDataToSend =
-									assignedCanvasIndex !== undefined
+									assignedGameRoom !== undefined
 										? updatedGameRoom.activeCanvasStates[
 												assignedCanvasIndex
 										  ]
@@ -859,12 +919,6 @@ async function handleWebSocketClose(ws, wss, db) {
 						`Player ${ws.playerId} disconnected but either reconnected or has remaining attempts. No cleanup needed by timer.`
 					);
 				}
-				delete gameRoom.disconnectionTimers[ws.playerId]; // Clean up the timer
-				// Important: Update gameRoom in DB again to reflect timer removal
-				await gameRoomsCollection.updateOne(
-					{ _id: gameRoom._id },
-					{ $unset: { [`disconnectionTimers.${ws.playerId}`]: '' } } // Unset specific timer
-				);
 			}, RECONNECT_GRACE_PERIOD_MS);
 
 			await gameRoomsCollection.updateOne(
@@ -872,9 +926,9 @@ async function handleWebSocketClose(ws, wss, db) {
 				{
 					$set: {
 						playerObjects: gameRoom.playerObjects,
-						disconnectionTimers: gameRoom.disconnectionTimers,
 					},
-				} // Update playerObjects and timers
+					// Do NOT set disconnectionTimers in DB; it's an in-memory map
+				}
 			);
 
 			// Notify other players about the temporary disconnection
@@ -895,7 +949,7 @@ async function handleWebSocketClose(ws, wss, db) {
 							})`,
 							playerCount: gameRoom.playerCount,
 							status: gameRoom.status,
-							gameCode: gameRoom.gameCode, // <--- ADD THIS LINE
+							gameCode: gameRoom.gameCode,
 						})
 					);
 				}
